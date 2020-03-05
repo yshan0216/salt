@@ -5,6 +5,7 @@ Developing Salt Tutorial
 ========================
 
 This tutorial assumes you have:
+
 * a web browser
 * a GitHub account (``<my_account>``)
 * a command line (CLI)
@@ -33,7 +34,7 @@ Clone
 In your CLI, navigate to the directory into which you want clone the Salt
 codebase and submit the following command:
 
-.. code-block:: shell
+.. code-block:: bash
 
     $ git clone https://github.com/<my_account>/salt.git
 
@@ -41,7 +42,7 @@ where ``<my_account>`` is the name of your GitHub account.  After the clone has
 completed, add SaltStack as a second remote and fetch any changes from
 ``upstream``.
 
-.. code-block:: shell
+.. code-block:: bash
 
     $ cd salt
     $ git remote add upstream https://github.com/saltstack/salt.git
@@ -52,7 +53,7 @@ the default branch for the SaltStack GitHub project.  This branch needs to
 track ``upstream/develop`` so that we will get all upstream changes when they
 happen.
 
-.. code-block:: shell
+.. code-block:: bash
 
     $ git checkout develop
     $ git branch --set-upstream-to upstream/develop
@@ -64,7 +65,7 @@ Fetch
 Fetch any ``upstream`` changes on the ``develop`` branch and sync them to your
 local copy of the branch with a single command:
 
-.. code-block:: shell
+.. code-block:: bash
 
     $ git pull --rebase
 
@@ -86,7 +87,7 @@ updated.  I'll select the ``alternatives`` module.
 Create a new branch off from ``develop``.  Be sure to name it something short
 and descriptive.
 
-.. code-block:: shell
+.. code-block:: bash
 
     $ git checkout -b virt_ret
 
@@ -96,10 +97,13 @@ Edit
 
 Edit the file you have selected, and verify that the changes are correct.
 
-.. code-block:: shell
+.. code-block:: bash
 
     $ vim salt/modules/alternatives.py
     $ git diff
+
+.. code-block:: diff
+
     diff --git a/salt/modules/alternatives.py b/salt/modules/alternatives.py
     index 1653e5f..30c0a59 100644
     --- a/salt/modules/alternatives.py
@@ -121,7 +125,7 @@ Commit
 Stage and commit the changes.  Write a descriptive commit summary, but try to
 keep it less than 50 characters.  Review your commit.
 
-.. code-block:: shell
+.. code-block:: bash
 
     $ git add salt/modules/alternatives.py
     $ git commit -m 'modules.alternatives: __virtual__ return err msg'
@@ -142,7 +146,7 @@ Push
 Push your branch to your GitHub account.  You will likely need to enter your
 GitHub username and password.
 
-.. code-block:: shell
+.. code-block:: bash
 
     $ git push origin virt_ret
     Username for 'https://github.com': <my_account>
@@ -155,7 +159,7 @@ GitHub username and password.
     you have done this, you may need add the keys to your git repository
     configuration
 
-    .. code-block:: shell
+    .. code-block:: bash
 
         $ git config ssh.key ~/.ssh/<key_name>
 
@@ -180,7 +184,7 @@ request``.
 
 .. note::
 
-    Although these instructions seem to be the official pull request proceedure
+    Although these instructions seem to be the official pull request procedure
     on github's website, here are two alternative methods that are simpler.
 
     * If you navigate to your clone of salt,

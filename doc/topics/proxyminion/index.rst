@@ -21,25 +21,40 @@ your typical housecat would be excellent source material for a PhD thesis.
 Salt proxy-minions provide the 'plumbing' that allows device enumeration
 and discovery, control, status, remote execution, and state management.
 
-See the :doc:`Proxy Minion Walkthrough </topics/proxyminion/demo>` for an end-to-end
+See the :ref:`Proxy Minion Walkthrough <proxy-minion-end-to-end-example>` for an end-to-end
 demonstration of a working REST-based proxy minion.
 
-See the :doc:`Proxy Minion SSH Walkthrough </topics/proxyminion/ssh>` for an end-to-end
+See the :ref:`Proxy Minion SSH Walkthrough <proxy-minion-ssh-end-to-end-example>` for an end-to-end
 demonstration of a working SSH proxy minion.
 
 
-See :doc:`Proxyminion States </topics/proxyminion/state>` to configure and
+See :ref:`Proxyminion States <proxy-minion-states>` to configure and
 run ``salt-proxy`` on a remote minion. Specify all your master side
 proxy (pillar) configuration and use this state to remotely configure proxies on one
 or more minions.
 
-See :doc:`Proxyminion Beacon </topics/proxyminion/beacon>` to help
+See :ref:`Proxyminion Beacon <proxy-minion-beacon>` to help
 with easy configuration and management of ``salt-proxy`` processes.
 
-New in Carbon
--------------
+New in 2017.7.0
+---------------
 
-Proxy minions now support configuration files with names ending in '*.conf'
+The :conf_proxy:`proxy_merge_grains_in_module` configuration variable
+introduced in 2016.3, has been changed, defaulting to ``True``.
+
+The connection with the remote device is kept alive by default, when the
+module implements the ``alive`` function and :conf_proxy:`proxy_keep_alive`
+is set to ``True``. The polling interval is set using the
+:conf_proxy:`proxy_keep_alive_interval` option which defaults to 1 minute.
+
+The developers are also able to use the :conf_proxy:`proxy_always_alive`,
+when designing a proxy module flexible enough to open the
+connection with the remote device only when required.
+
+New in 2016.11.0
+----------------
+
+Proxy minions now support configuration files with names ending in '\*.conf'
 and placed in /etc/salt/proxy.d.
 
 Proxy minions can now be configured in /etc/salt/proxy or /etc/salt/proxy.d
@@ -74,7 +89,7 @@ they are being loaded for the correct proxytype, example below:
         Only work on proxy
         '''
         try:
-            if salt.utils.is_proxy() and \
+            if salt.utils.platform.is_proxy() and \
                __opts__['proxy']['proxytype'] == 'ssh_sample':
                 return __virtualname__
         except KeyError:
@@ -113,9 +128,7 @@ will be executed on proxy-minion startup and its contents will be merged with
 the rest of the proxy's grains.  Since older proxy-minions might have used other
 methods to call such a function and add its results to grains, this is config-gated
 by a new proxy configuration option called ``proxy_merge_grains_in_module``.  This
-defaults to ``False`` in this release.  It will default to True in the release after
-next.  The next release is codenamed **Carbon**, the following is **Nitrogen**.
-
+defaults to ``True`` in the **2017.7.0** release.
 
 
 New in 2015.8.2
@@ -143,20 +156,24 @@ will need to be restarted to pick up any changes.  A corresponding utility funct
 ``saltutil.sync_proxymodules``, has been added to sync these modules to minions.
 
 In addition, a salt.utils helper function called `is_proxy()` was added to make
-it easier to tell when the running minion is a proxy minion.
+it easier to tell when the running minion is a proxy minion. **NOTE: This
+function was renamed to salt.utils.platform.is_proxy() for the 2018.3.0
+release**
 
 New in 2015.8
 -------------
 
-Starting with the 2015.8 release of Salt, proxy processes are no longer forked off from a controlling minion.
-Instead, they have their own script ``salt-proxy`` which takes mostly the same arguments that the
-standard Salt minion does with the addition of ``--proxyid``.  This is the id that the salt-proxy will
-use to identify itself to the master.  Proxy configurations are still best kept in Pillar and their format
-has not changed.
+Starting with the 2015.8 release of Salt, proxy processes are no longer forked
+off from a controlling minion.  Instead, they have their own script
+``salt-proxy`` which takes mostly the same arguments that the standard Salt
+minion does with the addition of ``--proxyid``.  This is the id that the
+salt-proxy will use to identify itself to the master.  Proxy configurations are
+still best kept in Pillar and their format has not changed.
 
-This change allows for better process control and logging.  Proxy processes can now be listed with standard
-process management utilities (``ps`` from the command line).  Also, a full Salt minion is no longer
-required (though it is still strongly recommended) on machines hosting proxies.
+This change allows for better process control and logging.  Proxy processes can
+now be listed with standard process management utilities (``ps`` from the
+command line).  Also, a full Salt minion is no longer required (though it is
+still strongly recommended) on machines hosting proxies.
 
 
 Getting Started
@@ -171,7 +188,7 @@ The key thing to remember is the left-most section of the diagram.  Salt's
 nature is to have a minion connect to a master, then the master may control
 the minion.  However, for proxy minions, the target device cannot run a minion.
 
-After the proxy minion is started and initiates its connection to the 'dumb'
+After the proxy minion is started and initiates its connection to the
 device, it connects back to the salt-master and for all intents and purposes
 looks like just another minion to the Salt master.
 
@@ -203,23 +220,23 @@ based on the diagram above:
 .. code-block:: yaml
 
     base:
-      dumbdevice1:
-        - dumbdevice1
-      dumbdevice2:
-        - dumbdevice2
-      dumbdevice3:
-        - dumbdevice3
-      dumbdevice4:
-        - dumbdevice4
-      dumbdevice5:
-        - dumbdevice5
-      dumbdevice6:
-        - dumbdevice6
-      dumbdevice7:
-        - dumbdevice7
+      net-device1:
+        - net-device1
+      net-device2:
+        - net-device2
+      net-device3:
+        - net-device3
+      i2c-device4:
+        - i2c-device4
+      i2c-device5:
+        - i2c-device5
+      433wireless-device6:
+        - 433wireless-device6
+      smsgate-device7:
+        - device7
 
 
-``/srv/pillar/dumbdevice1.sls``
+``/srv/pillar/net-device1.sls``
 
 .. code-block:: yaml
 
@@ -230,7 +247,7 @@ based on the diagram above:
       passwd: letmein
 
 
-``/srv/pillar/dumbdevice2.sls``
+``/srv/pillar/net-device2.sls``
 
 .. code-block:: yaml
 
@@ -241,7 +258,7 @@ based on the diagram above:
       passwd: letmein
 
 
-``/srv/pillar/dumbdevice3.sls``
+``/srv/pillar/net-device3.sls``
 
 .. code-block:: yaml
 
@@ -252,7 +269,7 @@ based on the diagram above:
       passwd: letmein
 
 
-``/srv/pillar/dumbdevice4.sls``
+``/srv/pillar/i2c-device4.sls``
 
 .. code-block:: yaml
 
@@ -261,7 +278,7 @@ based on the diagram above:
       i2c_address: 1
 
 
-``/srv/pillar/dumbdevice5.sls``
+``/srv/pillar/i2c-device5.sls``
 
 .. code-block:: yaml
 
@@ -270,7 +287,7 @@ based on the diagram above:
         i2c_address: 2
 
 
-``/srv/pillar/dumbdevice6.sls``
+``/srv/pillar/433wireless-device6.sls``
 
 .. code-block:: yaml
 
@@ -278,7 +295,7 @@ based on the diagram above:
         proxytype: 433mhz_wireless
 
 
-``/srv/pillar/dumbdevice7.sls``
+``/srv/pillar/smsgate-device7.sls``
 
 .. code-block:: yaml
 
@@ -292,18 +309,18 @@ the type of device that the proxy-minion is managing.
 
 In the above example
 
-- dumbdevices 1, 2, and 3 are network switches that have a management
+- net-devices 1, 2, and 3 are network switches that have a management
   interface available at a particular IP address.
 
-- dumbdevices 4 and 5 are very low-level devices controlled over an i2c bus.
+- i2c-devices 4 and 5 are very low-level devices controlled over an i2c bus.
   In this case the devices are physically connected to machine
   'minioncontroller2', and are addressable on the i2c bus at their respective
   i2c addresses.
 
-- dumbdevice6 is a 433 MHz wireless transmitter, also physically connected to
+- 433wireless-device6 is a 433 MHz wireless transmitter, also physically connected to
   minioncontroller2
 
-- dumbdevice7 is an SMS gateway connected to machine minioncontroller3 via a
+- smsgate-device7 is an SMS gateway connected to machine minioncontroller3 via a
   serial port.
 
 Because of the way pillar works, each of the salt-proxy processes that fork off the
@@ -311,7 +328,7 @@ proxy minions will only see the keys specific to the proxies it will be
 handling.
 
 Proxies can be configured in /etc/salt/proxy or with files in /etc/salt/proxy.d as of
-Salt's Carbon release.
+Salt's 2016.11.0 release.
 
 Also, in general, proxy-minions are lightweight, so the machines that run them
 could conceivably control a large number of devices.  To run more than one proxy from
@@ -353,18 +370,26 @@ the keyword ``pass`` if there is no shutdown logic required.
 be defined in the proxymodule. The code for ``ping`` should contact the
 controlled device and make sure it is really available.
 
+``alive(opts)``: Another optional function, it is used together with the
+``proxy_keep_alive`` option (default: ``True``). This function should
+return a boolean value corresponding to the state of the connection.
+If the connection is down, will try to restart (``shutdown``
+followed by ``init``). The polling frequency is controlled using
+the ``proxy_keep_alive_interval`` option, in minutes.
+
 ``grains()``: Rather than including grains in /srv/salt/_grains or in
 the standard install directories for grains, grains can be computed and
 returned by this function.  This function will be called automatically
 if ``proxy_merge_grains_in_module`` is set to ``True`` in /etc/salt/proxy.
-This variable defaults to ``False`` in 2016.3 but will default to ``True`` in
-the release code-named *Nitrogen*.
+This variable defaults to ``True`` in the release code-named *2017.7.0*.
 
 Pre 2015.8 the proxymodule also must have an ``id()`` function.  2015.8 and following don't use
 this function because the proxy's id is required on the command line.
 
 Here is an example proxymodule used to interface to a *very* simple REST
-server.  Code for the server is in the `salt-contrib GitHub repository <https://github.com/saltstack/salt-contrib/proxyminion_rest_example>`_
+server. Code for the server is in the `salt-contrib GitHub repository`_.
+
+.. _`salt-contrib GitHub repository`: https://github.com/saltstack/salt-contrib/tree/master/proxyminion_rest_example
 
 This proxymodule enables "service" enumeration, starting, stopping, restarting,
 and status; "package" installation, and a ping.
@@ -407,6 +432,9 @@ and status; "package" installation, and a ping.
         return True
 
 
+    def _complicated_function_that_determines_if_alive():
+        return True
+
     # Every proxy module needs an 'init', though you can
     # just put DETAILS['initialized'] = True here if nothing
     # else needs to be done.
@@ -421,6 +449,16 @@ and status; "package" installation, and a ping.
         # Make sure the REST URL ends with a '/'
         if not DETAILS['url'].endswith('/'):
             DETAILS['url'] += '/'
+
+    def alive(opts):
+        '''
+        This function returns a flag with the connection state.
+        It is very useful when the proxy minion establishes the communication
+        via a channel that requires a more elaborated keep-alive mechanism, e.g.
+        NETCONF over SSH.
+        '''
+        log.debug('rest_sample proxy alive() called...')
+        return _complicated_function_that_determines_if_alive()
 
 
     def initialized():
@@ -586,9 +624,10 @@ in the proxymodule itself.  This might be useful if a proxymodule author wants t
 all the code for the proxy interface in the same place instead of splitting it between
 the proxy and grains directories.
 
-This function will only be called automatically if the configuration variable ``proxy_merge_grains_in_module``
-is set to True in the proxy configuration file (default ``/etc/salt/proxy``).  This
-variable will default to True in the release code-named *Nitrogen*.
+This function will only be called automatically if the configuration variable
+``proxy_merge_grains_in_module`` is set to True in the proxy configuration file
+(default ``/etc/salt/proxy``).  This variable defaults to ``True`` in the
+release code-named *2017.7.0*.
 
 
 .. code: python::
@@ -607,7 +646,7 @@ variable will default to True in the release code-named *Nitrogen*.
 
     def __virtual__():
         try:
-            if salt.utils.is_proxy() and __opts__['proxy']['proxytype'] == 'rest_sample':
+            if salt.utils.platform.is_proxy() and __opts__['proxy']['proxytype'] == 'rest_sample':
                 return __virtualname__
         except KeyError:
             pass
@@ -675,7 +714,7 @@ Example from ``salt/grains/rest_sample.py``:
 
     def __virtual__():
         try:
-            if salt.utils.is_proxy() and __opts__['proxy']['proxytype'] == 'rest_sample':
+            if salt.utils.platform.is_proxy() and __opts__['proxy']['proxytype'] == 'rest_sample':
                 return __virtualname__
         except KeyError:
             pass
@@ -700,7 +739,7 @@ This sections specifically talks about the SSH proxy module and
 explains the working of the example proxy module ``ssh_sample``.
 
 Here is a simple example proxymodule used to interface to a device over SSH.
-Code for the SSH shell is in the `salt-contrib GitHub repository <https://github.com/saltstack/salt-contrib/proxyminion_ssh_example>`_
+Code for the SSH shell is in the `salt-contrib GitHub repository`_.
 
 This proxymodule enables "package" installation.
 
@@ -716,7 +755,7 @@ This proxymodule enables "package" installation.
     from __future__ import absolute_import
 
     # Import python libs
-    import json
+    import salt.utils.json
     import logging
 
     # Import Salt's libs
@@ -784,7 +823,7 @@ This proxymodule enables "package" installation.
                 jsonret.append(ln_)
             if '}' in ln_:
                 in_json = False
-        return json.loads('\n'.join(jsonret))
+        return salt.utils.json.loads('\n'.join(jsonret))
 
 
     def package_list():

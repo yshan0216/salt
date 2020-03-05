@@ -1,8 +1,8 @@
 .. _all-salt.thorium:
 
-====================================
-Full list of builtin thorium modules
-====================================
+===============
+thorium modules
+===============
 
 .. currentmodule:: salt.thorium
 
@@ -10,8 +10,13 @@ Full list of builtin thorium modules
     :toctree:
     :template: autosummary.rst.tmpl
 
+    calc
     check
     file
+    key
     local
     reg
+    runner
+    status
     timer
+    wheel

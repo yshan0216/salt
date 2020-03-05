@@ -25,6 +25,7 @@ Example:
         - nameserver: 123.234.345.456
         - keyfile: /srv/salt/dnspy_tsig_key.txt
 '''
+from __future__ import absolute_import, print_function, unicode_literals
 
 
 def __virtual__():
@@ -37,8 +38,9 @@ def present(name, zone, ttl, data, rdtype='A', **kwargs):
 
     name
         The host portion of the DNS record, e.g., 'webserver'. Name and zone
-        are concatenated when the entry is created, so make sure that
-        information is not duplicated in these two arguments.
+        are concatenated when the entry is created unless name includes a
+        trailing dot, so make sure that information is not duplicated in these
+        two arguments.
 
     zone
         The zone to check/update
@@ -95,8 +97,9 @@ def absent(name, zone, data=None, rdtype=None, **kwargs):
 
     name
         The host portion of the DNS record, e.g., 'webserver'. Name and zone
-        are concatenated when the entry is created, so make sure that
-        information is not duplicated in these two arguments.
+        are concatenated when the entry is created unless name includes a
+        trailing dot, so make sure that information is not duplicated in these
+        two arguments.
 
     zone
         The zone to check

@@ -25,24 +25,22 @@
 # processname: /usr/bin/salt-minion
 
 # Allow these to be overridden for tests
-: ${SALTMINION_BINDIR:=/usr/bin}
-: ${SALTMINION_SYSCONFDIR:=/etc}
-: ${SALTMINION_PYTHON:=python}    # Python must be 2.6 or newer
+: "${SALTMINION_BINDIR:=/usr/bin}"
+: "${SALTMINION_SYSCONFDIR:=/etc}"
 
 # Default values (can be overridden in settings file)
-: ${USER:=$(id -nu)}
+: "${USER:=$(id -nu)}"
 SALTMINION="${SALTMINION_BINDIR}/salt-minion"
 SALTCALL="${SALTMINION_BINDIR}/salt-call"
 # SALTMINION_CONFIGS are newline-separated entries of: MINION_USER CONFIG_DIR
-: ${SALTMINION_CONFIGS:="
+: "${SALTMINION_CONFIGS:="
 $USER ${SALTMINION_SYSCONFDIR}/salt
-"}
+"}"
 SALTMINION_ARGS=""
 SALTMINION_TIMEOUT=30
 SALTMINION_TICK=1
 
 SERVICE="salt-minion"
-PROCESS="salt-minion"
 
 # Read in settings file
 if [ -f "${SALTMINION_SYSCONFDIR}/default/salt" ]; then
@@ -69,23 +67,23 @@ _su_cmd() {
 
 
 _get_pid() {
-    netstat $NS_NOTRIM -ap --protocol=unix 2>$ERROR_TO_DEVNULL \
-        | sed -r  -e "\|\s${SOCK_DIR}/minion_event_${MINION_ID_HASH}_pub\.ipc$|"'!d; s|/.*||; s/.*\s//;'
+    cat $PID_FILE 2>/dev/null
 }
 
 
 _is_running() {
-    [ -n "$(_get_pid)" ]
+    [ -n "$(_get_pid)" ] && ps wwwaxu | grep '[s]alt-minion' | awk '{print $2}' | grep -qi "\b$(_get_pid)\b"
 }
 
 
 _get_salt_config_value() {
     _su_cmd \
         "$MINION_USER" \
-        "\"$SALTMINION_PYTHON\" \
+        "\
             \"$SALTCALL\" \
             -c \"$CONFIG_DIR\" \
             --no-color \
+            --skip-grains \
             --local config.get \
             \"$1\" \
         " \
@@ -127,7 +125,7 @@ start() {
 
     _su_cmd \
         "$MINION_USER" \
-        "\"$SALTMINION_PYTHON\" \
+        "\
             \"$SALTMINION\" \
             -c \"$CONFIG_DIR\" \
             -d $SALTMINION_ARGS \
@@ -156,7 +154,7 @@ start() {
             printf "\nPROCESSES:\n" >&2
             ps wwwaxu | grep '[s]alt-minion' >&2
             printf "\nSOCKETS:\n" >&2
-            netstat $NS_NOTRIM -ap --protocol=unix | grep 'salt.*minion' >&2            
+            netstat -n $NS_NOTRIM -ap --protocol=unix | grep 'salt.*minion' >&2
             printf "\nLOG_FILE:\n" >&2
             tail -n 20 "$LOG_FILE" >&2
             printf "\nENVIRONMENT:\n" >&2
@@ -219,8 +217,9 @@ status() {
     local retval=0
     local pid="$(_get_pid)"
 
-    if [ -n "$pid" ]; then
-        echo "$SERVICE:$MINION_USER:$MINION_ID is running: $pid"
+    if _is_running; then
+        # Unquote $pid here to display multiple PIDs in one line
+        echo "$SERVICE:$MINION_USER:$MINION_ID is running:" $pid
     else
         retval=3
         echo "$SERVICE:$MINION_USER:$MINION_ID is stopped."
@@ -246,17 +245,21 @@ main() {
     fi
 
     # Check to see if --notrim is a valid netstat option
-    if netstat --notrim 2>&1 >/dev/null | grep -q 'unrecognized'; then
+    if ! ( netstat --help 2>&1 | grep -wq '\-\-notrim') ; then
         NS_NOTRIM=''
     fi
 
     # Pre-filter for unhandled commands
     case "$1" in
-        (start|stop|status|restart|condrestart|try-restart|reload) ;;
+        (start|stop|status|restart|condrestart|try-restart) ;;
+        (reload)
+            echo "Can't reload $SERVICE - you must restart it"
+            exit 3
+            ;;
         (*)
-        echo "Usage: $0 {start|stop|status|restart|condrestart|try-restart|reload}"
-        exit 2
-        ;;
+            echo "Usage: $0 {start|stop|status|restart|condrestart|try-restart|reload}"
+            exit 2
+            ;;
     esac
 
     while read MINION_USER CONFIG_DIR; do
@@ -299,10 +302,6 @@ main() {
                     stop
                     start || RETVAL=$?
                 fi
-                ;;
-            (reload)
-                echo "Can't reload $SERVICE configuration - you must restart it"
-                RETVAL=3
                 ;;
             (*)
                 echo "Usage: $0 {start|stop|status|restart|condrestart|try-restart|reload}"

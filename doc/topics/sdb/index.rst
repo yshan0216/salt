@@ -14,12 +14,14 @@ SDB was added to Salt in version 2014.7.0.
 
 SDB Configuration
 =================
-In order to use the SDB interface, a configuration profile must be set up in
-either the master or minion configuration file. The configuration stanza
-includes the name/ID that the profile will be referred to as, a ``driver``
-setting, and any other arguments that are necessary for the SDB module that will
-be used. For instance, a profile called ``mykeyring``, which uses the
-``system`` service in the ``keyring`` module would look like:
+In order to use the SDB interface, a configuration profile must be set up.
+To be available for master commands, such as runners, it needs to be
+configured in the master configuration. For modules executed on a minion, it
+can be set either in the minion configuration file, or as a pillar. The
+configuration stanza includes the name/ID that the profile will be referred to
+as, a ``driver`` setting, and any other arguments that are necessary for the SDB
+module that will be used. For instance, a profile called ``mykeyring``, which
+uses the ``system`` service in the ``keyring`` module would look like:
 
 .. code-block:: yaml
 
@@ -77,26 +79,16 @@ from the ``kevinopenstack`` profile above, you would use:
 
     salt-call sdb.get sdb://kevinopenstack/password
 
-Some drivers use slightly more complex URIs. For instance, the ``vault`` driver
-requires the full path to where the key is stored, followed by a question mark,
-followed by the key to be retrieved.  If you were using a profile called
-``myvault``, you would use a URI that looks like:
-
-.. code-block:: bash
-
-    salt-call sdb.get 'sdb://myvault/secret/salt?saltstack'
-
 Setting a value uses the same URI as would be used to retrieve it, followed
-by the value as another argument. For the above ``myvault`` URI, you would set
-a new value using a command like:
+by the value as another argument.
 
 .. code-block:: bash
 
-    salt-call sdb.set 'sdb://myvault/secret/salt?saltstack' 'super awesome'
+    salt-call sdb.set 'sdb://myvault/secret/salt/saltstack' 'super awesome'
 
 Deleting values (if supported by the driver) is done pretty much the same way as
 getting them. Provided that you have a profile called ``mykvstore`` that uses
-a driver allowing to delete values you would delete a value as shown bellow:
+a driver allowing to delete values you would delete a value as shown below:
 
 .. code-block:: bash
 
@@ -107,8 +99,8 @@ the runner system:
 
 .. code-block:: bash
 
-    salt-run sdb.get 'sdb://myvault/secret/salt?saltstack'
-    salt-run sdb.set 'sdb://myvault/secret/salt?saltstack' 'super awesome'
+    salt-run sdb.get 'sdb://myvault/secret/salt/saltstack'
+    salt-run sdb.set 'sdb://myvault/secret/salt/saltstack' 'super awesome'
     salt-run sdb.delete 'sdb://mykvstore/foobar'
 
 
@@ -152,6 +144,7 @@ When writing Salt modules, it is not recommended to call ``sdb.get`` directly,
 as it requires the user to provide values in SDB, using a specific URI. Use
 ``config.get`` instead.
 
+.. _sdb-writing-modules:
 
 Writing SDB Modules
 ===================

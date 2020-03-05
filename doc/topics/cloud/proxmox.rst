@@ -3,7 +3,7 @@ Getting Started With Proxmox
 ============================
 
 Proxmox Virtual Environment is a complete server virtualization management solution,
-based on LXC and full virtualization with KVM.
+based on OpenVZ(in Proxmox up to 3.4)/LXC(from Proxmox 4.0 and up) and full virtualization with KVM.
 Further information can be found at:
 
 http://www.proxmox.org/
@@ -14,8 +14,8 @@ Dependencies
 * requests >= 2.2.1
 
 Please note:
-This module allows you to create both OpenVZ and KVM but installing Salt on it will only be
-done when the VM is an OpenVZ container rather than a KVM virtual machine.
+This module allows you to create OpenVZ/LXC containers and KVM VMs, but installing Salt on it will only be
+done on containers rather than a KVM virtual machine.
 
 * Set up the cloud configuration at
   ``/etc/salt/cloud.providers`` or
@@ -66,7 +66,7 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
     proxmox-ubuntu:
         provider: my-proxmox-config
         image: local:vztmpl/ubuntu-12.04-standard_12.04-1_amd64.tar.gz
-        technology: openvz
+        technology: lxc
 
         # host needs to be set to the configured name of the proxmox host
         # and not the ip address or FQDN of the server
@@ -91,7 +91,7 @@ it can be verified with Salt:
 
 .. code-block:: bash
 
-    # salt myubuntu test.ping
+    # salt myubuntu test.version
 
 
 Required Settings
@@ -150,6 +150,16 @@ with their default settings listed.
     # The name of the image, from ``salt-cloud --list-images proxmox``
     image: local:vztmpl/ubuntu-12.04-standard_12.04-1_amd64.tar.gz
 
+    # Whether or not to verify the SSL cert on the Proxmox host
+    verify_ssl: False
+
+    # Network interfaces, netX
+    net0: name=eth0,bridge=vmbr0,ip=dhcp
+
+    # Public key to add to /root/.ssh/authorized_keys.
+    pubkey: 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABA...'
+
+
 QEMU
 ====
 
@@ -164,9 +174,9 @@ QEMU profile file (for a new VM):
     # Image of the new VM
     image: image.iso # You can get all your available images using 'salt-cloud --list-images provider_name' (Ex: 'salt-cloud --list-images my-proxmox-config')
 
-    # Technology used to create the VM ('qemu' or 'openvz')
+    # Technology used to create the VM ('qemu', 'openvz'(on Proxmox <4.x) or 'lxc'(on Proxmox 4.x+))
     technology: qemu
- 
+
     # Proxmox node name
     host: node_name
 
@@ -181,7 +191,7 @@ QEMU profile file (for a new VM):
 
     # OS Type enum (other / wxp / w2k / w2k3 / w2k8 / wvista / win7 / win8 / l24 / l26 / solaris)
     ostype: win7
-    
+
     # Hard disk location
     sata0: <location>:<size>, format=<qcow2/vmdk/raw>, size=<size>GB #Example: local:120,format=qcow2,size=120GB
 
@@ -193,6 +203,9 @@ QEMU profile file (for a new VM):
 
     # Enable QEMU Guest Agent (0 / 1)
     agent: 1
+
+    # Use the QEMU Guest agent to determine the VM's IP (0 / 1)
+    agent_get_ip: 1
 
     # VM name
     name: Test
@@ -206,7 +219,7 @@ QEMU profile file (for a clone):
 
   proxmox-win7:
     # Enable Clone
-    clone: 1
+    clone: True
 
     # New VM description
     clone_description: 'description'
@@ -223,9 +236,9 @@ QEMU profile file (for a clone):
     # VMID of Template to clone
     clone_from: ID
 
-    # Technology used to create the VM ('qemu' or 'openvz')
+    # Technology used to create the VM ('qemu' or 'lxc')
     technology: qemu
- 
+
     # Proxmox node name
     host: node_name
 
@@ -238,5 +251,11 @@ QEMU profile file (for a clone):
 More information can be found on Proxmox API under the 'POST' method of /nodes/{node}/qemu/{vmid}/clone
 
 .. note::
-    The Proxmox API offers a lot more options and parameters, which are not yet supported by this salt-cloud 'overlay'. Feel free to add your contribution by forking the github repository and modifying  the following file: salt/salt/cloud/clouds/proxmox.py
-    An easy way to support more parameters for VM creation would be to add the names of the optional parameters in the 'create_nodes(vm_)' function, under the 'qemu' technology. But it requires you to dig into the code ...
+    The Proxmox API offers a lot more options and parameters, which are not yet
+    supported by this salt-cloud 'overlay'. Feel free to add your contribution
+    by forking the github repository and modifying  the following file:
+    ``salt/cloud/clouds/proxmox.py``
+
+    An easy way to support more parameters for VM creation would be to add the
+    names of the optional parameters in the 'create_nodes(vm\_)' function, under
+    the 'qemu' technology. But it requires you to dig into the code ...

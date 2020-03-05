@@ -26,6 +26,12 @@ salt-cp
 
     salt-cp
 
+salt-extend
+===========
+.. toctree::
+
+    salt-extend
+
 salt-key
 ========
 .. toctree::
@@ -67,6 +73,12 @@ salt-syndic
 .. toctree::
 
     salt-syndic
+
+salt-unity
+==========
+.. toctree::
+
+    salt-unity
 
 salt-api
 ========

@@ -8,12 +8,12 @@
 '''
 
 # Import Python libs
-from __future__ import absolute_import, print_function
-import os
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
 
 # Import Salt libs
 import salt.client.netapi
+import salt.utils.files
 import salt.utils.parsers as parsers
 from salt.utils.verify import check_user, verify_files, verify_log
 
@@ -42,9 +42,8 @@ class SaltAPI(parsers.SaltAPIParser):
                                                                    'udp://',
                                                                    'file://')):
                     # Logfile is not using Syslog, verify
-                    current_umask = os.umask(0o027)
-                    verify_files([logfile], self.config['user'])
-                    os.umask(current_umask)
+                    with salt.utils.files.set_umask(0o027):
+                        verify_files([logfile], self.config['user'])
         except OSError as err:
             log.exception('Failed to prepare salt environment')
             self.shutdown(err.errno)
@@ -55,16 +54,6 @@ class SaltAPI(parsers.SaltAPIParser):
         self.api = salt.client.netapi.NetapiClient(self.config)
         self.daemonize_if_required()
         self.set_pidfile()
-
-    def run(self):
-        import salt.utils
-        salt.utils.warn_until(
-            'Nitrogen',
-            'Please stop calling \'SaltAPI.run()\' and instead call '
-            '\'SaltAPI.start()\'. \'SaltAPI.run()\' will be supported '
-            'until Salt {version}.'
-        )
-        self.start()
 
     def start(self):
         '''

@@ -41,6 +41,11 @@ Grains data can be listed by using the 'grains.items' module:
 
 .. _static-custom-grains:
 
+Using grains in a state
+=======================
+
+To use a grain in a state you can access it via `{{ grains['key'] }}`.
+
 Grains in the Minion Config
 ===========================
 
@@ -58,8 +63,7 @@ Just add the option :conf_minion:`grains` and pass options to it:
       cab_u: 14-15
 
 Then status data specific to your servers can be retrieved via Salt, or used
-inside of the State system for matching. It also makes targeting, in the case
-of the example above, simply based on specific data about your deployment.
+inside of the State system for matching. It also makes it possible to target based on specific data about your deployment, as in the example above.
 
 
 Grains in /etc/salt/grains
@@ -78,6 +82,22 @@ same way as in the above example, only without a top-level ``grains:`` key:
     cabinet: 13
     cab_u: 14-15
 
+.. note::
+
+    Grains in ``/etc/salt/grains`` are ignored if you specify the same grains in the minion config.
+
+.. note::
+
+    Grains are static, and since they are not often changed, they will need a grains refresh when they are updated. You can do this by calling: ``salt minion saltutil.refresh_modules``
+
+.. note::
+
+    You can equally configure static grains for Proxy Minions.
+    As multiple Proxy Minion processes can run on the same machine, you need
+    to index the files using the Minion ID, under ``/etc/salt/proxy.d/<minion ID>/grains``.
+    For example, the grains for the Proxy Minion ``router1`` can be defined
+    under ``/etc/salt/proxy.d/router1/grains``, while the grains for the
+    Proxy Minion ``switch7`` can be put in ``/etc/salt/proxy.d/switch7/grains``.
 
 Matching Grains in the Top File
 ===============================
@@ -88,71 +108,43 @@ the following configuration:
 
 .. code-block:: yaml
 
-    'node_type:webserver':
+    'roles:webserver':
       - match: grain
-      - webserver
+      - state0
 
-    'node_type:postgres':
+    'roles:memcache':
       - match: grain
-      - postgres
-
-    'node_type:redis':
-      - match: grain
-      - redis
-
-    'node_type:lb':
-      - match: grain
-      - lb
+      - state1
+      - state2
 
 For this example to work, you would need to have defined the grain
-``node_type`` for the minions you wish to match. This simple example is nice,
-but too much of the code is similar. To go one step further, Jinja templating
-can be used to simplify the :term:`top file`.
-
-.. code-block:: yaml
-
-    {% set the_node_type = salt['grains.get']('node_type', '') %}
-
-    {% if the_node_type %}
-      'node_type:{{ the_node_type }}':
-        - match: grain
-        - {{ the_node_type }}
-    {% endif %}
-
-Using Jinja templating, only one match entry needs to be defined.
-
-.. note::
-
-    The example above uses the :mod:`grains.get <salt.modules.grains.get>`
-    function to account for minions which do not have the ``node_type`` grain
-    set.
+``role`` for the minions you wish to match.
 
 .. _writing-grains:
 
 Writing Grains
 ==============
 
-The grains interface is derived by executing
-all of the "public" functions found in the modules located in the grains
-package or the custom grains directory. The functions in the modules of
-the grains must return a Python :ref:`dict <python2:typesmapping>`, where the
-keys in the :ref:`dict <python2:typesmapping>` are the names of the grains and
-the values are the values.
+The grains are derived by executing all of the "public" functions (i.e. those
+which do not begin with an underscore) found in the modules located in the
+Salt's core grains code, followed by those in any custom grains modules. The
+functions in a grains module must return a :ref:`Python dictionary
+<python:typesmapping>`, where the dictionary keys are the names of grains, and
+each key's value is that value for that grain.
 
-Custom grains should be placed in a ``_grains`` directory located under the
-:conf_master:`file_roots` specified by the master config file.  The default path
-would be ``/srv/salt/_grains``.  Custom grains will be
-distributed to the minions when :mod:`state.highstate
+Custom grains modules should be placed in a subdirectory named ``_grains``
+located under the :conf_master:`file_roots` specified by the master config
+file. The default path would be ``/srv/salt/_grains``. Custom grains modules
+will be distributed to the minions when :mod:`state.highstate
 <salt.modules.state.highstate>` is run, or by executing the
 :mod:`saltutil.sync_grains <salt.modules.saltutil.sync_grains>` or
 :mod:`saltutil.sync_all <salt.modules.saltutil.sync_all>` functions.
 
-Grains are easy to write, and only need to return a dictionary.  A common
-approach would be code something similar to the following:
+Grains modules are easy to write, and (as noted above) only need to return a
+dictionary. For example:
 
 .. code-block:: python
 
-   #!/usr/bin/env python
    def yourfunction():
         # initialize a grains dictionary
         grains = {}
@@ -161,9 +153,37 @@ approach would be code something similar to the following:
         grains['anothergrain'] = 'somevalue'
         return grains
 
-Before adding a grain to Salt, consider what the grain is and remember that
-grains need to be static data. If the data is something that is likely to
-change, consider using :doc:`Pillar <../pillar/index>` instead.
+The name of the function does not matter and will not factor into the grains
+data at all; only the keys/values returned become part of the grains.
+
+When to Use a Custom Grain
+--------------------------
+
+Before adding new grains, consider what the data is and remember that grains
+should (for the most part) be static data.
+
+If the data is something that is likely to change, consider using :ref:`Pillar
+<pillar>` or an execution module instead. If it's a simple set of
+key/value pairs, pillar is a good match. If compiling the information requires
+that system commands be run, then putting this information in an execution
+module is likely a better idea.
+
+Good candidates for grains are data that is useful for targeting minions in the
+:ref:`top file <states-top>` or the Salt CLI. The name and data structure of
+the grain should be designed to support many platforms, operating systems or
+applications. Also, keep in mind that Jinja templating in Salt supports
+referencing pillar data as well as invoking functions from execution modules,
+so there's no need to place information in grains to make it available to Jinja
+templates. For example:
+
+.. code-block:: text
+
+    ...
+    ...
+    {{ salt['module.function_name']('argument_1', 'argument_2') }}
+    {{ pillar['my_pillar_key'] }}
+    ...
+    ...
 
 .. warning::
 
@@ -253,6 +273,11 @@ grain will override that core grain. Similarly, grains from
 ``/etc/salt/minion`` override both core grains and custom grain modules, and
 grains in ``_grains`` will override *any* grains of the same name.
 
+For custom grains, if the function takes an argument ``grains``, then the
+previously rendered grains will be passed in.  Because the rest of the grains
+could be rendered in any order, the only grains that can be relied upon to be
+passed in are ``core`` grains. This was added in the 2019.2.0 release.
+
 
 Examples of Grains
 ==================
@@ -266,8 +291,14 @@ the Salt minion and provides the principal example of how to write grains:
 Syncing Grains
 ==============
 
-Syncing grains can be done a number of ways, they are automatically synced when
+Syncing grains can be done a number of ways. They are automatically synced when
 :mod:`state.highstate <salt.modules.state.highstate>` is called, or (as noted
 above) the grains can be manually synced and reloaded by calling the
 :mod:`saltutil.sync_grains <salt.modules.saltutil.sync_grains>` or
 :mod:`saltutil.sync_all <salt.modules.saltutil.sync_all>` functions.
+
+.. note::
+
+    When the :conf_minion:`grains_cache` is set to False, the grains dictionary is built
+    and stored in memory on the minion. Every time the minion restarts or
+    ``saltutil.refresh_grains`` is run, the grain dictionary is rebuilt from scratch.

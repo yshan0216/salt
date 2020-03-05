@@ -5,16 +5,17 @@ This state downloads artifacts from artifactory.
 '''
 
 # Import python libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
 
-def downloaded(name, artifact, target_dir='/tmp', target_file=None):
+def downloaded(name, artifact, target_dir='/tmp', target_file=None, use_literal_group_id=False):
     '''
     Ensures that the artifact from artifactory exists at given location. If it doesn't exist, then
-    it will be downloaded. It it already exists then the checksum of existing file is checked against checksum
+    it will be downloaded. If it already exists then the checksum of existing file is checked against checksum
     in artifactory. If it is different then the step will fail.
 
     artifact
@@ -83,23 +84,30 @@ def downloaded(name, artifact, target_dir='/tmp', target_file=None):
            'changes': {},
            'comment': ''}
 
-    try:
-        fetch_result = __fetch_from_artifactory(artifact, target_dir, target_file)
-        log.debug("fetch_result=%s", str(fetch_result))
+    if 'test' in __opts__ and __opts__['test'] is True:
+        fetch_result = {}
+        fetch_result['status'] = True
+        fetch_result['comment'] = 'Artifact would be downloaded from URL: {0}'.format(artifact['artifactory_url'])
+        fetch_result['changes'] = {}
+    else:
+        try:
+            fetch_result = __fetch_from_artifactory(artifact, target_dir, target_file, use_literal_group_id)
+        except Exception as exc:
+            ret['result'] = False
+            ret['comment'] = six.text_type(exc)
+            return ret
 
-        ret['result'] = fetch_result['status']
-        ret['comment'] = fetch_result['comment']
-        ret['changes'] = fetch_result['changes']
-        log.debug("ret=%s", str(ret))
+    log.debug('fetch_result = %s', fetch_result)
 
-        return ret
-    except Exception as exc:
-        ret['result'] = False
-        ret['comment'] = exc
-        return ret
+    ret['result'] = fetch_result['status']
+    ret['comment'] = fetch_result['comment']
+    ret['changes'] = fetch_result['changes']
+    log.debug('ret = %s', ret)
+
+    return ret
 
 
-def __fetch_from_artifactory(artifact, target_dir, target_file):
+def __fetch_from_artifactory(artifact, target_dir, target_file, use_literal_group_id):
     if ('latest_snapshot' in artifact and artifact['latest_snapshot']) or artifact['version'] == 'latest_snapshot':
         fetch_result = __salt__['artifactory.get_latest_snapshot'](artifactory_url=artifact['artifactory_url'],
                                                                    repository=artifact['repository'],
@@ -110,7 +118,8 @@ def __fetch_from_artifactory(artifact, target_dir, target_file):
                                                                    target_dir=target_dir,
                                                                    target_file=target_file,
                                                                    username=artifact['username'] if 'username' in artifact else None,
-                                                                   password=artifact['password'] if 'password' in artifact else None)
+                                                                   password=artifact['password'] if 'password' in artifact else None,
+                                                                   use_literal_group_id=use_literal_group_id)
     elif artifact['version'].endswith('SNAPSHOT'):
         fetch_result = __salt__['artifactory.get_snapshot'](artifactory_url=artifact['artifactory_url'],
                                                             repository=artifact['repository'],
@@ -122,7 +131,8 @@ def __fetch_from_artifactory(artifact, target_dir, target_file):
                                                             target_dir=target_dir,
                                                             target_file=target_file,
                                                             username=artifact['username'] if 'username' in artifact else None,
-                                                            password=artifact['password'] if 'password' in artifact else None)
+                                                            password=artifact['password'] if 'password' in artifact else None,
+                                                            use_literal_group_id=use_literal_group_id)
     elif artifact['version'] == 'latest':
         fetch_result = __salt__['artifactory.get_latest_release'](artifactory_url=artifact['artifactory_url'],
                                                                    repository=artifact['repository'],
@@ -133,7 +143,8 @@ def __fetch_from_artifactory(artifact, target_dir, target_file):
                                                                    target_dir=target_dir,
                                                                    target_file=target_file,
                                                                    username=artifact['username'] if 'username' in artifact else None,
-                                                                   password=artifact['password'] if 'password' in artifact else None)
+                                                                   password=artifact['password'] if 'password' in artifact else None,
+                                                                   use_literal_group_id=use_literal_group_id)
     else:
         fetch_result = __salt__['artifactory.get_release'](artifactory_url=artifact['artifactory_url'],
                                                            repository=artifact['repository'],
@@ -145,5 +156,6 @@ def __fetch_from_artifactory(artifact, target_dir, target_file):
                                                            target_dir=target_dir,
                                                            target_file=target_file,
                                                            username=artifact['username'] if 'username' in artifact else None,
-                                                           password=artifact['password'] if 'password' in artifact else None)
+                                                           password=artifact['password'] if 'password' in artifact else None,
+                                                           use_literal_group_id=use_literal_group_id)
     return fetch_result

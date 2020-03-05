@@ -8,7 +8,11 @@ Manage S3 Buckets
 Create and destroy S3 buckets. Be aware that this interacts with Amazon's services,
 and so may incur charges.
 
-This module uses ``boto3``, which can be installed via package, or pip.
+:depends:
+    - boto
+    - boto3
+
+The dependencies listed above can be installed via package or pip.
 
 This module accepts explicit vpc credentials but can also utilize
 IAM roles assigned to the instance through Instance Profiles. Dynamic
@@ -33,9 +37,9 @@ config:
     myprofile:
         keyid: GKTADJGHEIQSXMKKRBJ08H
         key: askdjghsdfjkghWupUjasdflkdfklgjsdfjajkghs
-            region: us-east-1
+        region: us-east-1
 
-.. code-block:: yaml
+.. code-block:: text
 
     Ensure bucket exists:
         boto_s3_bucket.present:
@@ -134,16 +138,16 @@ config:
 
 '''
 
-# Import Python Libs
-from __future__ import absolute_import
+# Import Python libs
+from __future__ import absolute_import, print_function, unicode_literals
+import copy
 import logging
-import os
-import os.path
-from copy import deepcopy
-import json
 
-# Import Salt Libs
-from salt.ext.six import string_types  # pylint: disable=import-error
+# Import Salt libs
+import salt.utils.json
+
+# Import 3rd-party libs
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
@@ -155,26 +159,45 @@ def __virtual__():
     return 'boto_s3_bucket' if 'boto_s3_bucket.exists' in __salt__ else False
 
 
+def _normalize_user(user_dict):
+    ret = copy.deepcopy(user_dict)
+    # 'Type' is required as input to the AWS API, but not returned as output. So
+    # we ignore it everywhere.
+    if 'Type' in ret:
+        del ret['Type']
+    return ret
+
+
 def _get_canonical_id(region, key, keyid, profile):
-    return __salt__['boto_s3_bucket.list'](
+    ret = __salt__['boto_s3_bucket.list'](
         region=region, key=key, keyid=keyid, profile=profile
     ).get('Owner')
+    return _normalize_user(ret)
+
+
+def _prep_acl_for_compare(ACL):
+    '''
+    Prepares the ACL returned from the AWS API for comparison with a given one.
+    '''
+    ret = copy.deepcopy(ACL)
+    ret['Owner'] = _normalize_user(ret['Owner'])
+    for item in ret.get('Grants', ()):
+        item['Grantee'] = _normalize_user(item.get('Grantee'))
+    return ret
 
 
 def _acl_to_grant(ACL, owner_canonical_id):
     if 'AccessControlPolicy' in ACL:
-        ret = deepcopy(ACL['AccessControlPolicy'])
-        # Type is required as input, but is not returned as output
-        for item in ret.get('Grants'):
-            if 'Type' in item.get('Grantee', ()):
-                del item['Grantee']['Type']
+        ret = copy.deepcopy(ACL['AccessControlPolicy'])
+        ret['Owner'] = _normalize_user(ret['Owner'])
+        for item in ACL.get('Grants', ()):
+            item['Grantee'] = _normalize_user(item.get('Grantee'))
         # If AccessControlPolicy is set, other options are not allowed
         return ret
+    owner_canonical_grant = copy.deepcopy(owner_canonical_id)
+    owner_canonical_grant.update({'Type': 'CanonicalUser'})
     ret = {
-        'Grants': [{
-            'Grantee': owner_canonical_id,
-            'Permission': 'FULL_CONTROL'
-        }],
+        'Grants': [],
         'Owner': owner_canonical_id
     }
     if 'ACL' in ACL:
@@ -183,6 +206,7 @@ def _acl_to_grant(ACL, owner_canonical_id):
         if acl in ('public-read', 'public-read-write'):
             ret['Grants'].append({
                 'Grantee': {
+                    'Type': 'Group',
                     'URI': 'http://acs.amazonaws.com/groups/global/AllUsers'
                 },
                 'Permission': 'READ'
@@ -190,6 +214,7 @@ def _acl_to_grant(ACL, owner_canonical_id):
         if acl == 'public-read-write':
             ret['Grants'].append({
                 'Grantee': {
+                    'Type': 'Group',
                     'URI': 'http://acs.amazonaws.com/groups/global/AllUsers'
                 },
                 'Permission': 'WRITE'
@@ -197,6 +222,7 @@ def _acl_to_grant(ACL, owner_canonical_id):
         if acl == 'aws-exec-read':
             ret['Grants'].append({
                 'Grantee': {
+                    'Type': 'CanonicalUser',
                     'DisplayName': 'za-team',
                     'ID': '6aa5a366c34c1cbe25dc49211496e913e0351eb0e8c37aa3477e40942ec6b97c'
                 },
@@ -205,6 +231,7 @@ def _acl_to_grant(ACL, owner_canonical_id):
         if acl == 'authenticated-read':
             ret['Grants'].append({
                 'Grantee': {
+                    'Type': 'Group',
                     'URI': 'http://acs.amazonaws.com/groups/global/AuthenticatedUsers'
                 },
                 'Permission': 'READ'
@@ -213,6 +240,7 @@ def _acl_to_grant(ACL, owner_canonical_id):
             for permission in ('WRITE', 'READ_ACP'):
                 ret['Grants'].append({
                     'Grantee': {
+                        'Type': 'Group',
                         'URI': 'http://acs.amazonaws.com/groups/s3/LogDelivery'
                     },
                     'Permission': permission
@@ -229,7 +257,8 @@ def _acl_to_grant(ACL, owner_canonical_id):
                 kind, val = item.split('=')
                 if kind == 'uri':
                     grantee = {
-                        'URI': val,
+                        'Type': 'Group',
+                        'URI': val
                     }
                 elif kind == 'id':
                     grantee = {
@@ -237,6 +266,7 @@ def _acl_to_grant(ACL, owner_canonical_id):
                         # match, and we will always update. Result is still
                         # idempotent
                         # 'DisplayName': ???,
+                        'Type': 'CanonicalUser',
                         'ID': val
                     }
                 else:
@@ -251,6 +281,12 @@ def _acl_to_grant(ACL, owner_canonical_id):
                     'Grantee': grantee,
                     'Permission': permission
                 })
+    # Boto only seems to list the default Grants when no other Grants are defined
+    if not ret['Grants']:
+        ret['Grants'] = [{
+                'Grantee': owner_canonical_grant,
+                'Permission': 'FULL_CONTROL'
+        }]
     return ret
 
 
@@ -284,20 +320,7 @@ def _compare_acl(current, desired, region, key, keyid, profile):
 
 
 def _compare_policy(current, desired, region, key, keyid, profile):
-    '''
-    Policy discription is always returned as a JSON string. Comparison
-    should be object-to-object, since order is not significant in JSON
-    '''
-    if isinstance(desired, string_types):
-        desired = json.loads(desired)
-
-    if current is not None:
-        temp = current.get('Policy')
-        if isinstance(temp, string_types):
-            current = {'Policy': json.loads(temp)}
-        else:
-            current = None
-    return __utils__['boto3.json_objs_equal'](current, desired)
+    return current == desired
 
 
 def _compare_replication(current, desired, region, key, keyid, profile):
@@ -305,7 +328,7 @@ def _compare_replication(current, desired, region, key, keyid, profile):
     Replication accepts a non-ARN role name, but always returns an ARN
     '''
     if desired is not None and desired.get('Role'):
-        desired = deepcopy(desired)
+        desired = copy.deepcopy(desired)
         desired['Role'] = _get_role_arn(desired['Role'],
                                  region=region, key=key, keyid=keyid, profile=profile)
     return __utils__['boto3.json_objs_equal'](current, desired)
@@ -354,7 +377,10 @@ def present(name, Bucket,
         notifications of specified events for a bucket
 
     Policy
-        Policy on the bucket
+        Policy on the bucket.  As a special case, if the Policy is set to the
+        string `external`, it will not be managed by this state, and can thus
+        be safely set in other ways (e.g. by other state calls, or by hand if
+        some unusual policy configuration is required).
 
     Replication
         Replication rules. You can add as many as 1,000 rules.
@@ -400,6 +426,10 @@ def present(name, Bucket,
         NotificationConfiguration = {}
     if RequestPayment is None:
         RequestPayment = {'Payer': 'BucketOwner'}
+    if Policy:
+        if isinstance(Policy, six.string_types) and Policy != 'external':
+            Policy = salt.utils.json.loads(Policy)
+        Policy = __utils__['boto3.ordered'](Policy)
 
     r = __salt__['boto_s3_bucket.exists'](Bucket=Bucket,
            region=region, key=key, keyid=keyid, profile=profile)
@@ -454,7 +484,7 @@ def present(name, Bucket,
         return ret
 
     # bucket exists, ensure config matches
-    ret['comment'] = os.linesep.join([ret['comment'], 'S3 bucket {0} is present.'.format(Bucket)])
+    ret['comment'] = ' '.join([ret['comment'], 'S3 bucket {0} is present.'.format(Bucket)])
     ret['changes'] = {}
     _describe = __salt__['boto_s3_bucket.describe'](Bucket=Bucket,
                                  region=region, key=key, keyid=keyid, profile=profile)
@@ -518,36 +548,56 @@ def present(name, Bucket,
         config_items.append(replication_item)
         config_items.append(versioning_item)
 
+    update = False
+    changes = {}
     for varname, setter, current, comparator, desired, deleter in config_items:
+        if varname == 'Policy':
+            if desired == {'Policy': 'external'}:
+                # Short-circuit to allow external policy control.
+                log.debug('S3 Policy set to `external`, skipping application.')
+                continue
+            if current is not None:
+                temp = current.get('Policy')
+                # Policy description is always returned as a JSON string.
+                # Convert it to JSON now for ease of comparisons later.
+                if isinstance(temp, six.string_types):
+                    current = __utils__['boto3.ordered'](
+                        {'Policy': salt.utils.json.loads(temp)}
+                    )
         if not comparator(current, desired, region, key, keyid, profile):
-            # current state and desired state differ
-            if __opts__['test']:
-                msg = 'S3 bucket {0} set to be modified.'.format(Bucket)
-                ret['comment'] = msg
-                ret['result'] = None
-                return ret
-            ret['changes'].setdefault('new', {})[varname] = desired
-            ret['changes'].setdefault('old', {})[varname] = current
-
-            if deleter and desired is None:
-                # Setting can be deleted, so use that to unset it
-                r = __salt__['boto_s3_bucket.{0}'.format(deleter)](Bucket=Bucket,
-                   region=region, key=key, keyid=keyid, profile=profile)
-                if not r.get('deleted'):
-                    ret['result'] = False
-                    ret['comment'] = 'Failed to update bucket: {0}.'.format(r['error']['message'])
-                    ret['changes'] = {}
-                    return ret
+            update = True
+            if varname == 'ACL':
+                changes.setdefault('new', {})[varname] = _acl_to_grant(
+                        desired, _get_canonical_id(region, key, keyid, profile))
             else:
-                r = __salt__['boto_s3_bucket.{0}'.format(setter)](Bucket=Bucket,
-                   region=region, key=key, keyid=keyid, profile=profile,
-                   **(desired or {}))
-                if not r.get('updated'):
-                    ret['result'] = False
-                    ret['comment'] = 'Failed to update bucket: {0}.'.format(r['error']['message'])
-                    ret['changes'] = {}
-                    return ret
+                changes.setdefault('new', {})[varname] = desired
+            changes.setdefault('old', {})[varname] = current
 
+            if not __opts__['test']:
+                if deleter and desired is None:
+                    # Setting can be deleted, so use that to unset it
+                    r = __salt__['boto_s3_bucket.{0}'.format(deleter)](Bucket=Bucket,
+                      region=region, key=key, keyid=keyid, profile=profile)
+                    if not r.get('deleted'):
+                        ret['result'] = False
+                        ret['comment'] = 'Failed to update bucket: {0}.'.format(r['error']['message'])
+                        return ret
+                else:
+                    r = __salt__['boto_s3_bucket.{0}'.format(setter)](Bucket=Bucket,
+                      region=region, key=key, keyid=keyid, profile=profile,
+                      **(desired or {}))
+                    if not r.get('updated'):
+                        ret['result'] = False
+                        ret['comment'] = 'Failed to update bucket: {0}.'.format(r['error']['message'])
+                        return ret
+    if update and __opts__['test']:
+        msg = 'S3 bucket {0} set to be modified.'.format(Bucket)
+        ret['comment'] = msg
+        ret['result'] = None
+        ret['pchanges'] = changes
+        return ret
+
+    ret['changes'] = changes
     # Since location can't be changed, try that last so at least the rest of
     # the things are correct by the time we fail here. Fail so the user will
     # notice something mismatches their desired state.
@@ -561,7 +611,7 @@ def present(name, Bucket,
     return ret
 
 
-def absent(name, Bucket,
+def absent(name, Bucket, Force=False,
                   region=None, key=None, keyid=None, profile=None):
     '''
     Ensure bucket with passed properties is absent.
@@ -571,6 +621,9 @@ def absent(name, Bucket,
 
     Bucket
         Name of the bucket.
+
+    Force
+        Empty the bucket first if necessary - Boolean.
 
     region
         Region to connect to.
@@ -592,8 +645,8 @@ def absent(name, Bucket,
            'changes': {}
            }
 
-    r = __salt__['boto_s3_bucket.exists'](Bucket,
-                       region=region, key=key, keyid=keyid, profile=profile)
+    r = __salt__['boto_s3_bucket.exists'](Bucket, region=region, key=key,
+                                          keyid=keyid, profile=profile)
     if 'error' in r:
         ret['result'] = False
         ret['comment'] = 'Failed to delete bucket: {0}.'.format(r['error']['message'])
@@ -607,9 +660,8 @@ def absent(name, Bucket,
         ret['comment'] = 'S3 bucket {0} is set to be removed.'.format(Bucket)
         ret['result'] = None
         return ret
-    r = __salt__['boto_s3_bucket.delete'](Bucket,
-                                    region=region, key=key,
-                                    keyid=keyid, profile=profile)
+    r = __salt__['boto_s3_bucket.delete'](Bucket, Force=Force, region=region,
+                                          key=key, keyid=keyid, profile=profile)
     if not r['deleted']:
         ret['result'] = False
         ret['comment'] = 'Failed to delete bucket: {0}.'.format(r['error']['message'])

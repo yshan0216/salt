@@ -1,23 +1,22 @@
 # -*- coding: utf-8 -*-
 '''
-Manage Dell DRAC.
+Manage Dell DRAC
 
 .. versionadded:: 2015.8.2
 '''
-# pylint: disable=W0141
 
 # Import python libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
 import os
 import re
 
 # Import Salt libs
-from salt.exceptions import CommandExecutionError
-import salt.utils
+from salt.exceptions import CommandExecutionError, SaltException
+import salt.utils.path
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 from salt.ext.six.moves import range  # pylint: disable=import-error,no-name-in-module,redefined-builtin
 from salt.ext.six.moves import map
 
@@ -27,15 +26,15 @@ __proxyenabled__ = ['fx2']
 
 try:
     run_all = __salt__['cmd.run_all']
-except NameError:
+except (NameError, KeyError):
     import salt.modules.cmdmod
     __salt__ = {
-        'cmd.run_all': salt.modules.cmdmod._run_all_quiet
+        'cmd.run_all': salt.modules.cmdmod.run_all
     }
 
 
 def __virtual__():
-    if salt.utils.which('racadm'):
+    if salt.utils.path.which('racadm'):
         return True
 
     return (False, 'The drac execution module cannot be loaded: racadm binary not in path.')
@@ -52,7 +51,7 @@ def __parse_drac(output):
         if i.strip().endswith(':') and '=' not in i:
             section = i[0:-1]
             drac[section] = {}
-        if len(i.rstrip()) > 0 and '=' in i:
+        if i.rstrip() and '=' in i:
             if section in drac:
                 drac[section].update(dict(
                     [[prop.strip() for prop in i.split('=')]]
@@ -96,8 +95,7 @@ def __execute_cmd(command, host=None,
         output_loglevel='quiet')
 
     if cmd['retcode'] != 0:
-        log.warning('racadm return an exit code \'{0}\'.'
-                    .format(cmd['retcode']))
+        log.warning('racadm returned an exit code of %s', cmd['retcode'])
         return False
 
     return True
@@ -130,8 +128,7 @@ def __execute_ret(command, host=None,
         output_loglevel='quiet')
 
     if cmd['retcode'] != 0:
-        log.warning('racadm return an exit code \'{0}\'.'
-                    .format(cmd['retcode']))
+        log.warning('racadm returned an exit code of %s', cmd['retcode'])
     else:
         fmtlines = []
         for l in cmd['stdout'].splitlines():
@@ -144,7 +141,7 @@ def __execute_ret(command, host=None,
             if l.startswith('Continuing execution'):
                 continue
 
-            if len(l.strip()) == 0:
+            if not l.strip():
                 continue
             fmtlines.append(l)
             if '=' in l:
@@ -152,6 +149,110 @@ def __execute_ret(command, host=None,
         cmd['stdout'] = '\n'.join(fmtlines)
 
     return cmd
+
+
+def get_property(host=None, admin_username=None, admin_password=None, property=None):
+    '''
+    .. versionadded:: Fluorine
+
+    Return specific property
+
+    host
+        The chassis host.
+
+    admin_username
+        The username used to access the chassis.
+
+    admin_password
+        The password used to access the chassis.
+
+    property:
+        The property which should be get.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt dell dracr.get_property property=System.ServerOS.HostName
+    '''
+    if property is None:
+        raise SaltException('No property specified!')
+    ret = __execute_ret('get \'{0}\''.format(property), host=host,
+                        admin_username=admin_username,
+                        admin_password=admin_password)
+    return ret
+
+
+def set_property(host=None, admin_username=None, admin_password=None, property=None, value=None):
+    '''
+    .. versionadded:: Fluorine
+
+    Set specific property
+
+    host
+        The chassis host.
+
+    admin_username
+        The username used to access the chassis.
+
+    admin_password
+        The password used to access the chassis.
+
+    property:
+        The property which should be set.
+
+    value:
+        The value which should be set to property.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt dell dracr.set_property property=System.ServerOS.HostName value=Pretty-server
+    '''
+    if property is None:
+        raise SaltException('No property specified!')
+    elif value is None:
+        raise SaltException('No value specified!')
+    ret = __execute_ret('set \'{0}\' \'{1}\''.format(property, value), host=host,
+                        admin_username=admin_username,
+                        admin_password=admin_password)
+    return ret
+
+
+def ensure_property_set(host=None, admin_username=None, admin_password=None, property=None, value=None):
+    '''
+    .. versionadded:: Fluorine
+
+    Ensure that property is set to specific value
+
+    host
+        The chassis host.
+
+    admin_username
+        The username used to access the chassis.
+
+    admin_password
+        The password used to access the chassis.
+
+    property:
+        The property which should be set.
+
+    value:
+        The value which should be set to property.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt dell dracr.ensure_property_set property=System.ServerOS.HostName value=Pretty-server
+    '''
+    ret = get_property(host, admin_username, admin_password, property)
+    if ret['stdout'] == value:
+        return True
+
+    ret = set_property(host, admin_username, admin_password, property, value)
+    return ret
 
 
 def get_dns_dracname(host=None,
@@ -194,8 +295,7 @@ def system_info(host=None,
                         module=module)
 
     if cmd['retcode'] != 0:
-        log.warning('racadm return an exit code \'{0}\'.'
-                    .format(cmd['retcode']))
+        log.warning('racadm returned an exit code of %s', cmd['retcode'])
         return cmd
 
     return __parse_drac(cmd['stdout'])
@@ -273,8 +373,7 @@ def network_info(host=None,
                         module=module)
 
     if cmd['retcode'] != 0:
-        log.warning('racadm return an exit code \'{0}\'.'
-                    .format(cmd['retcode']))
+        log.warning('racadm returned an exit code of %s', cmd['retcode'])
 
     cmd['stdout'] = 'Network:\n' + 'Device = ' + module + '\n' + \
                     cmd['stdout']
@@ -396,8 +495,7 @@ def list_users(host=None,
                             admin_password=admin_password)
 
         if cmd['retcode'] != 0:
-            log.warning('racadm return an exit code \'{0}\'.'
-                        .format(cmd['retcode']))
+            log.warning('racadm returned an exit code of %s', cmd['retcode'])
 
         for user in cmd['stdout'].splitlines():
             if not user.startswith('cfg'):
@@ -413,7 +511,7 @@ def list_users(host=None,
                 else:
                     break
             else:
-                if len(_username) > 0:
+                if _username:
                     users[_username].update({key: val})
 
     return users
@@ -445,7 +543,7 @@ def delete_user(username,
                              admin_password=admin_password)
 
     else:
-        log.warning('\'{0}\' does not exist'.format(username))
+        log.warning('User \'%s\' does not exist', username)
         return False
 
 
@@ -486,7 +584,7 @@ def change_password(username, password, uid=None, host=None,
                              host=host, admin_username=admin_username,
                              admin_password=admin_password, module=module)
     else:
-        log.warning('\'{0}\' does not exist'.format(username))
+        log.warning('racadm: user \'%s\' does not exist', username)
         return False
 
 
@@ -548,7 +646,7 @@ def create_user(username, password, permissions,
 
     .. code-block:: bash
 
-        salt dell dracr.create_user [USERNAME] [PASSWORD] [PRIVELEGES]
+        salt dell dracr.create_user [USERNAME] [PASSWORD] [PRIVILEGES]
         salt dell dracr.create_user diana secret login,test_alerts,clear_logs
 
     DRAC Privileges
@@ -568,7 +666,7 @@ def create_user(username, password, permissions,
         users = list_users()
 
     if username in users:
-        log.warning('\'{0}\' already exists'.format(username))
+        log.warning('racadm: user \'%s\' already exists', username)
         return False
 
     for idx in six.iterkeys(users):
@@ -616,7 +714,7 @@ def set_permissions(username, permissions,
 
     .. code-block:: bash
 
-        salt dell dracr.set_permissions [USERNAME] [PRIVELEGES]
+        salt dell dracr.set_permissions [USERNAME] [PRIVILEGES]
              [USER INDEX - optional]
         salt dell dracr.set_permissions diana login,test_alerts,clear_logs 4
 
@@ -924,7 +1022,7 @@ def server_pxe(host=None,
             log.warning('failed to set boot order')
             return False
 
-    log.warning('failed to to configure PXE boot')
+    log.warning('failed to configure PXE boot')
     return False
 
 
@@ -1008,7 +1106,7 @@ def get_slotname(slot, host=None, admin_username=None, admin_password=None):
                            admin_password=admin_password)
     # The keys for this dictionary are strings, not integers, so convert the
     # argument to a string
-    slot = str(slot)
+    slot = six.text_type(slot)
     return slots[slot]['slotname']
 
 
@@ -1159,7 +1257,7 @@ def inventory(host=None, admin_username=None, admin_password=None):
             in_chassis = True
             continue
 
-        if len(l) < 1:
+        if not l:
             continue
 
         line = re.split('  +', l.strip())

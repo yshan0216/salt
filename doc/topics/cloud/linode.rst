@@ -38,13 +38,13 @@ Set up the provider cloud configuration file at ``/etc/salt/cloud.providers`` or
 Profile Configuration
 =====================
 Linode profiles require a ``provider``, ``size``, ``image``, and ``location``. Set up an initial profile
-at ``/etc/salt/cloud.profiles`` or in the ``/etc/salt/cloud.profiles.d/`` directory:
+at ``/etc/salt/cloud.profiles`` or ``/etc/salt/cloud.profiles.d/*.conf``:
 
 .. code-block:: yaml
 
     linode_1024:
       provider: my-linode-config
-      size: Linode 2048
+      size: Linode 2GB
       image: CentOS 7
       location: London, England, UK
 
@@ -62,7 +62,7 @@ it can be verified with Salt:
 
 .. code-block:: bash
 
-    salt linode-instance test.ping
+    salt linode-instance test.version
 
 
 Listing Sizes
@@ -77,11 +77,13 @@ command:
         ----------
         linode:
             ----------
-            Linode 1024:
+            Linode 2GB:
                 ----------
                 AVAIL:
                     ----------
                     10:
+                        500
+                    11:
                         500
                     2:
                         500
@@ -100,11 +102,19 @@ command:
                 CORES:
                     1
                 DISK:
-                    24
+                    50
                 HOURLY:
                     0.015
                 LABEL:
-                    Linode 1024
+                    Linode 2GB
+                PLANID:
+                    2
+                PRICE:
+                    10.0
+                RAM:
+                    2048
+                XFER:
+                    2000
     ...SNIP...
 
 
@@ -187,10 +197,6 @@ assign_private_ip
 .. versionadded:: 2016.3.0
 
 Assigns a private IP address to a Linode when set to True. Default is False.
-
-private_ip
-----------
-Deprecated in favor of `assign_private_ip`_ in Salt 2016.3.0.
 
 ssh_interface
 -------------

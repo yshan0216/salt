@@ -25,17 +25,18 @@ For example:
       # can be set in the config file, or passed in at the CLI.
       repo_name: my_repo
 
-      # optional: only some functions, such as 'add_user',
-      # require a dev_team_id.
-      dev_team_id: 1234
+      # optional: it can be dangerous to change the privacy of a repository
+      # in an automated way. set this to True to allow privacy modifications
+      allow_repo_privacy_changes: False
 '''
 
 # Import python libs
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals, print_function
 import logging
 
 # Import Salt Libs
 from salt.exceptions import CommandExecutionError
+from salt.ext import six
 import salt.utils.http
 
 # Import third party libs
@@ -84,7 +85,7 @@ def _get_config_value(profile, config_name):
         )
 
     config_value = config.get(config_name)
-    if not config_value:
+    if config_value is None:
         raise CommandExecutionError(
             'The \'{0}\' parameter was not found in the \'{1}\' '
             'profile.'.format(
@@ -109,6 +110,7 @@ def _get_client(profile):
     if key not in __context__:
         __context__[key] = github.Github(
             token,
+            per_page=100
         )
     return __context__[key]
 
@@ -122,25 +124,52 @@ def _get_members(organization, params=None):
     )
 
 
-def _get_repos(profile, params=None):
+def _get_repos(profile, params=None, ignore_cache=False):
+    # Use cache when no params are given
     org_name = _get_config_value(profile, 'org_name')
-    client = _get_client(profile)
-    organization = client.get_organization(org_name)
+    key = 'github.{0}:repos'.format(org_name)
 
-    return github.PaginatedList.PaginatedList(
-        github.Repository.Repository,
-        organization._requester,
-        organization.url + '/repos',
-        params
-    )
+    if key not in __context__ or ignore_cache or params is not None:
+        org_name = _get_config_value(profile, 'org_name')
+        client = _get_client(profile)
+        organization = client.get_organization(org_name)
+
+        result = github.PaginatedList.PaginatedList(
+            github.Repository.Repository,
+            organization._requester,
+            organization.url + '/repos',
+            params
+        )
+
+        # Only cache results if no params were given (full scan)
+        if params is not None:
+            return result
+
+        next_result = []
+
+        for repo in result:
+            next_result.append(repo)
+
+            # Cache a copy of each repo for single lookups
+            repo_key = "github.{0}:{1}:repo_info".format(org_name, repo.name.lower())
+            __context__[repo_key] = _repo_to_dict(repo)
+
+        __context__[key] = next_result
+
+    return __context__[key]
 
 
-def list_users(profile="github"):
+def list_users(profile="github", ignore_cache=False):
     '''
     List all users within the organization.
 
     profile
         The name of the profile configuration to use. Defaults to ``github``.
+
+    ignore_cache
+        Bypasses the use of cached users.
+
+        .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -153,14 +182,10 @@ def list_users(profile="github"):
     key = "github.{0}:users".format(
         org_name
     )
-
-    if key not in __context__:
+    if key not in __context__ or ignore_cache:
         client = _get_client(profile)
         organization = client.get_organization(org_name)
-
-        users = [member.login for member in _get_members(organization, None)]
-        __context__[key] = users
-
+        __context__[key] = [member.login for member in _get_members(organization, None)]
     return __context__[key]
 
 
@@ -201,8 +226,8 @@ def get_user(name, profile='github', user_details=False):
 
     try:
         user = client.get_user(name)
-    except UnknownObjectException as e:
-        logging.exception("Resource not found {0}: ".format(str(e)))
+    except UnknownObjectException:
+        log.exception("Resource not found")
         return False
 
     response['company'] = user.company
@@ -220,7 +245,7 @@ def get_user(name, profile='github', user_details=False):
             "GET",
             organization.url + "/memberships/" + user._identity
         )
-    except UnknownObjectException as e:
+    except UnknownObjectException:
         response['membership_state'] = 'nonexistent'
         response['in_org'] = False
         return response
@@ -255,27 +280,12 @@ def add_user(name, profile='github'):
 
     try:
         github_named_user = client.get_user(name)
-    except UnknownObjectException as e:
-        logging.exception("Resource not found {0}: ".format(str(e)))
+    except UnknownObjectException:
+        log.exception("Resource not found")
         return False
 
-    org_team = organization.get_team(
-        _get_config_value(profile, 'dev_team_id')
-    )
-
-    try:
-        headers, data = org_team._requester.requestJsonAndCheck(
-            "PUT",
-            org_team.url + "/memberships/" + github_named_user._identity,
-            input={'role': 'member'},
-            parameters={'role': 'member'}
-        )
-    except github.GithubException as e:
-        logging.error(str(e))
-        return True
-
     headers, data = organization._requester.requestJsonAndCheck(
-        "GET",
+        "PUT",
         organization.url + "/memberships/" + github_named_user._identity
     )
 
@@ -306,8 +316,8 @@ def remove_user(name, profile='github'):
 
     try:
         git_user = client.get_user(name)
-    except UnknownObjectException as e:
-        logging.exception("Resource not found: {0}".format(str(e)))
+    except UnknownObjectException:
+        log.exception("Resource not found")
         return False
 
     if organization.has_in_members(git_user):
@@ -320,7 +330,7 @@ def get_issue(issue_number, repo_name=None, profile='github', output='min'):
     '''
     Return information about a single issue in a named repository.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     issue_number
         The number of the issue to retrieve.
@@ -350,7 +360,7 @@ def get_issue(issue_number, repo_name=None, profile='github', output='min'):
         repo_name = _get_config_value(profile, 'repo_name')
 
     action = '/'.join(['repos', org_name, repo_name])
-    command = 'issues/' + str(issue_number)
+    command = 'issues/' + six.text_type(issue_number)
 
     ret = {}
     issue_data = _query(profile, action=action, command=command)
@@ -372,7 +382,7 @@ def get_issue_comments(issue_number,
     '''
     Return information about the comments for a given issue in a named repository.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     issue_number
         The number of the issue for which to retrieve comments.
@@ -406,7 +416,7 @@ def get_issue_comments(issue_number,
         repo_name = _get_config_value(profile, 'repo_name')
 
     action = '/'.join(['repos', org_name, repo_name])
-    command = '/'.join(['issues', str(issue_number), 'comments'])
+    command = '/'.join(['issues', six.text_type(issue_number), 'comments'])
 
     args = {}
     if since:
@@ -443,7 +453,7 @@ def get_issues(repo_name=None,
     '''
     Returns information for all issues in a given repository, based on the search options.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     repo_name
         The name of the repository for which to list issues. This argument is
@@ -568,7 +578,7 @@ def get_milestones(repo_name=None,
     '''
     Return information about milestones for a given repository.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     repo_name
         The name of the repository for which to list issues. This argument is
@@ -648,7 +658,7 @@ def get_milestone(number=None,
     '''
     Return information about a single milestone in a named repository.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     number
         The number of the milestone to retrieve. If provided, this option
@@ -691,7 +701,7 @@ def get_milestone(number=None,
 
     action = '/'.join(['repos', org_name, repo_name])
     if number:
-        command = 'milestones/' + str(number)
+        command = 'milestones/' + six.text_type(number)
         milestone_data = _query(profile, action=action, command=command)
         milestone_id = milestone_data.get('id')
         if output == 'full':
@@ -705,7 +715,7 @@ def get_milestone(number=None,
 
     else:
         milestones = get_milestones(repo_name=repo_name, profile=profile, output=output)
-        for key, val in milestones.iteritems():
+        for key, val in six.iteritems(milestones):
             if val.get('title') == name:
                 ret[key] = val
                 return ret
@@ -713,14 +723,40 @@ def get_milestone(number=None,
     return ret
 
 
-def get_repo_info(repo_name, profile='github'):
+def _repo_to_dict(repo):
+    ret = {}
+    ret['id'] = repo.id
+    ret['name'] = repo.name
+    ret['full_name'] = repo.full_name
+    ret['owner'] = repo.owner.login
+    ret['private'] = repo.private
+    ret['html_url'] = repo.html_url
+    ret['description'] = repo.description
+    ret['fork'] = repo.fork
+    ret['homepage'] = repo.homepage
+    ret['size'] = repo.size
+    ret['stargazers_count'] = repo.stargazers_count
+    ret['watchers_count'] = repo.watchers_count
+    ret['language'] = repo.language
+    ret['open_issues_count'] = repo.open_issues_count
+    ret['forks'] = repo.forks
+    ret['open_issues'] = repo.open_issues
+    ret['watchers'] = repo.watchers
+    ret['default_branch'] = repo.default_branch
+    ret['has_issues'] = repo.has_issues
+    ret['has_wiki'] = repo.has_wiki
+    ret['has_downloads'] = repo.has_downloads
+    return ret
+
+
+def get_repo_info(repo_name, profile='github', ignore_cache=False):
     '''
     Return information for a given repo.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     repo_name
-        The name of repository.
+        The name of the repository.
 
     profile
         The name of the profile configuration to use. Defaults to ``github``.
@@ -732,18 +768,27 @@ def get_repo_info(repo_name, profile='github'):
         salt myminion github.get_repo_info salt
         salt myminion github.get_repo_info salt profile='my-github-profile'
     '''
-    ret = {}
-    org_name = _get_config_value(profile, 'org_name')
-    client = _get_client(profile)
 
-    repo = client.get_repo('/'.join([org_name, repo_name]))
-    if repo:
-        # client.get_repo will return a github.Repository.Repository object,
-        # even if the repo is invalid. We need to catch the exception when
-        # we try to perform actions on the repo object, rather than above
-        # the if statement.
+    org_name = _get_config_value(profile, 'org_name')
+    key = "github.{0}:{1}:repo_info".format(
+        _get_config_value(profile, 'org_name'),
+        repo_name.lower()
+    )
+
+    if key not in __context__ or ignore_cache:
+        client = _get_client(profile)
         try:
-            ret['id'] = repo.id
+            repo = client.get_repo('/'.join([org_name, repo_name]))
+            if not repo:
+                return {}
+
+            # client.get_repo can return a github.Repository.Repository object,
+            # even if the repo is invalid. We need to catch the exception when
+            # we try to perform actions on the repo object, rather than above
+            # the if statement.
+            ret = _repo_to_dict(repo)
+
+            __context__[key] = ret
         except github.UnknownObjectException:
             raise CommandExecutionError(
                 'The \'{0}\' repository under the \'{1}\' organization could not '
@@ -752,24 +797,52 @@ def get_repo_info(repo_name, profile='github'):
                     org_name
                 )
             )
-        ret['name'] = repo.name
-        ret['full_name'] = repo.full_name
-        ret['owner'] = repo.owner.login
-        ret['private'] = repo.private
-        ret['html_url'] = repo.html_url
-        ret['description'] = repo.description
-        ret['fork'] = repo.fork
-        ret['homepage'] = repo.homepage
-        ret['size'] = repo.size
-        ret['stargazers_count'] = repo.stargazers_count
-        ret['watchers_count'] = repo.watchers_count
-        ret['language'] = repo.language
-        ret['open_issues_count'] = repo.open_issues_count
-        ret['forks'] = repo.forks
-        ret['open_issues'] = repo.open_issues
-        ret['watchers'] = repo.watchers
-        ret['default_branch'] = repo.default_branch
+    return __context__[key]
 
+
+def get_repo_teams(repo_name, profile='github'):
+    '''
+    Return teams belonging to a repository.
+
+    .. versionadded:: 2017.7.0
+
+    repo_name
+        The name of the repository from which to retrieve teams.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.get_repo_teams salt
+        salt myminion github.get_repo_teams salt profile='my-github-profile'
+    '''
+    ret = []
+    org_name = _get_config_value(profile, 'org_name')
+    client = _get_client(profile)
+
+    try:
+        repo = client.get_repo('/'.join([org_name, repo_name]))
+    except github.UnknownObjectException:
+        raise CommandExecutionError(
+            'The \'{0}\' repository under the \'{1}\' organization could not '
+            'be found.'.format(repo_name, org_name)
+        )
+    try:
+        teams = repo.get_teams()
+        for team in teams:
+            ret.append({
+                'id': team.id,
+                'name': team.name,
+                'permission': team.permission
+            })
+    except github.UnknownObjectException:
+        raise CommandExecutionError(
+            'Unable to retrieve teams for repository \'{0}\' under the \'{1}\' '
+            'organization.'.format(repo_name, org_name)
+        )
     return ret
 
 
@@ -779,10 +852,12 @@ def list_repos(profile='github'):
     repositories within the organization Dependent upon the access rights of
     the profile token.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     profile
         The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
 
     .. code-block:: bash
 
@@ -797,10 +872,12 @@ def list_private_repos(profile='github'):
     List private repositories within the organization. Dependent upon the access
     rights of the profile token.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     profile
         The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
 
     .. code-block:: bash
 
@@ -818,10 +895,12 @@ def list_public_repos(profile='github'):
     '''
     List public repositories within the organization.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     profile
         The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
 
     .. code-block:: bash
 
@@ -833,6 +912,924 @@ def list_public_repos(profile='github'):
         if repo.private is False:
             repos.append(repo.name)
     return repos
+
+
+def add_repo(name,
+             description=None,
+             homepage=None,
+             private=None,
+             has_issues=None,
+             has_wiki=None,
+             has_downloads=None,
+             auto_init=None,
+             gitignore_template=None,
+             license_template=None,
+             profile="github"):
+    '''
+    Create a new github repository.
+
+    name
+        The name of the team to be created.
+
+    description
+        The description of the repository.
+
+    homepage
+        The URL with more information about the repository.
+
+    private
+        The visiblity of the repository. Note that private repositories require
+        a paid GitHub account.
+
+    has_issues
+        Whether to enable issues for this repository.
+
+    has_wiki
+        Whether to enable the wiki for this repository.
+
+    has_downloads
+        Whether to enable downloads for this repository.
+
+    auto_init
+        Whether to create an initial commit with an empty README.
+
+    gitignore_template
+        The desired language or platform for a .gitignore, e.g "Haskell".
+
+    license_template
+        The desired LICENSE template to apply, e.g "mit" or "mozilla".
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.add_repo 'repo_name'
+
+    .. versionadded:: 2016.11.0
+    '''
+    try:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        given_params = {
+            'description': description,
+            'homepage': homepage,
+            'private': private,
+            'has_issues': has_issues,
+            'has_wiki': has_wiki,
+            'has_downloads': has_downloads,
+            'auto_init': auto_init,
+            'gitignore_template': gitignore_template,
+            'license_template': license_template
+        }
+        parameters = {'name': name}
+        for param_name, param_value in six.iteritems(given_params):
+            if param_value is not None:
+                parameters[param_name] = param_value
+
+        organization._requester.requestJsonAndCheck(
+            "POST",
+            organization.url + "/repos",
+            input=parameters
+        )
+        return True
+    except github.GithubException:
+        log.exception('Error creating a repo')
+        return False
+
+
+def edit_repo(name,
+              description=None,
+              homepage=None,
+              private=None,
+              has_issues=None,
+              has_wiki=None,
+              has_downloads=None,
+              profile="github"):
+    '''
+    Updates an existing Github repository.
+
+    name
+        The name of the team to be created.
+
+    description
+        The description of the repository.
+
+    homepage
+        The URL with more information about the repository.
+
+    private
+        The visiblity of the repository. Note that private repositories require
+        a paid GitHub account.
+
+    has_issues
+        Whether to enable issues for this repository.
+
+    has_wiki
+        Whether to enable the wiki for this repository.
+
+    has_downloads
+        Whether to enable downloads for this repository.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.add_repo 'repo_name'
+
+    .. versionadded:: 2016.11.0
+    '''
+
+    try:
+        allow_private_change = _get_config_value(profile, 'allow_repo_privacy_changes')
+    except CommandExecutionError:
+        allow_private_change = False
+
+    if private is not None and not allow_private_change:
+        raise CommandExecutionError("The private field is set to be changed for "
+                                    "repo {0} but allow_repo_privacy_changes "
+                                    "disallows this.".format(name))
+
+    try:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        repo = organization.get_repo(name)
+
+        given_params = {
+            'description': description,
+            'homepage': homepage,
+            'private': private,
+            'has_issues': has_issues,
+            'has_wiki': has_wiki,
+            'has_downloads': has_downloads
+        }
+        parameters = {'name': name}
+        for param_name, param_value in six.iteritems(given_params):
+            if param_value is not None:
+                parameters[param_name] = param_value
+
+        organization._requester.requestJsonAndCheck(
+            "PATCH",
+            repo.url,
+            input=parameters
+        )
+        get_repo_info(name, profile=profile, ignore_cache=True)  # Refresh cache
+        return True
+    except github.GithubException:
+        log.exception('Error editing a repo')
+        return False
+
+
+def remove_repo(name, profile="github"):
+    '''
+    Remove a Github repository.
+
+    name
+        The name of the repository to be removed.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.remove_repo 'my-repo'
+
+    .. versionadded:: 2016.11.0
+    '''
+    repo_info = get_repo_info(name, profile=profile)
+    if not repo_info:
+        log.error('Repo %s to be removed does not exist.', name)
+        return False
+    try:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        repo = organization.get_repo(name)
+        repo.delete()
+        _get_repos(profile=profile, ignore_cache=True)  # refresh cache
+        return True
+    except github.GithubException:
+        log.exception('Error deleting a repo')
+        return False
+
+
+def get_team(name, profile="github"):
+    '''
+    Returns the team details if a team with the given name exists, or None
+    otherwise.
+
+    name
+        The team name for which to obtain information.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.get_team 'team_name'
+    '''
+    return list_teams(profile).get(name)
+
+
+def add_team(name,
+             description=None,
+             repo_names=None,
+             privacy=None,
+             permission=None,
+             profile="github"):
+    '''
+    Create a new Github team within an organization.
+
+    name
+        The name of the team to be created.
+
+    description
+        The description of the team.
+
+    repo_names
+        The names of repositories to add the team to.
+
+    privacy
+        The level of privacy for the team, can be 'secret' or 'closed'.
+
+    permission
+        The default permission for new repositories added to the team, can be
+        'pull', 'push' or 'admin'.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.add_team 'team_name'
+
+    .. versionadded:: 2016.11.0
+    '''
+    try:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        parameters = {}
+        parameters['name'] = name
+
+        if description is not None:
+            parameters['description'] = description
+        if repo_names is not None:
+            parameters['repo_names'] = repo_names
+        if permission is not None:
+            parameters['permission'] = permission
+        if privacy is not None:
+            parameters['privacy'] = privacy
+
+        organization._requester.requestJsonAndCheck(
+            'POST',
+            organization.url + '/teams',
+            input=parameters
+        )
+        list_teams(ignore_cache=True)  # Refresh cache
+        return True
+    except github.GithubException:
+        log.exception('Error creating a team')
+        return False
+
+
+def edit_team(name,
+              description=None,
+              privacy=None,
+              permission=None,
+              profile="github"):
+    '''
+    Updates an existing Github team.
+
+    name
+        The name of the team to be edited.
+
+    description
+        The description of the team.
+
+    privacy
+        The level of privacy for the team, can be 'secret' or 'closed'.
+
+    permission
+        The default permission for new repositories added to the team, can be
+        'pull', 'push' or 'admin'.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.edit_team 'team_name' description='Team description'
+
+    .. versionadded:: 2016.11.0
+    '''
+    team = get_team(name, profile=profile)
+    if not team:
+        log.error('Team %s does not exist', name)
+        return False
+    try:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        team = organization.get_team(team['id'])
+
+        parameters = {}
+        if name is not None:
+            parameters['name'] = name
+        if description is not None:
+            parameters['description'] = description
+        if privacy is not None:
+            parameters['privacy'] = privacy
+        if permission is not None:
+            parameters['permission'] = permission
+
+        team._requester.requestJsonAndCheck(
+            "PATCH",
+            team.url,
+            input=parameters
+        )
+        return True
+    except UnknownObjectException:
+        log.exception('Resource not found')
+        return False
+
+
+def remove_team(name, profile="github"):
+    '''
+    Remove a github team.
+
+    name
+        The name of the team to be removed.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.remove_team 'team_name'
+
+    .. versionadded:: 2016.11.0
+    '''
+    team_info = get_team(name, profile=profile)
+    if not team_info:
+        log.error('Team %s to be removed does not exist.', name)
+        return False
+    try:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        team = organization.get_team(team_info['id'])
+        team.delete()
+        return list_teams(ignore_cache=True, profile=profile).get(name) is None
+    except github.GithubException:
+        log.exception('Error deleting a team')
+        return False
+
+
+def list_team_repos(team_name, profile="github", ignore_cache=False):
+    '''
+    Gets the repo details for a given team as a dict from repo_name to repo details.
+    Note that repo names are always in lower case.
+
+    team_name
+        The name of the team from which to list repos.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    ignore_cache
+        Bypasses the use of cached team repos.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.list_team_repos 'team_name'
+
+    .. versionadded:: 2016.11.0
+    '''
+    cached_team = get_team(team_name, profile=profile)
+    if not cached_team:
+        log.error('Team %s does not exist.', team_name)
+        return False
+
+    # Return from cache if available
+    if cached_team.get('repos') and not ignore_cache:
+        return cached_team.get('repos')
+
+    try:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        team = organization.get_team(cached_team['id'])
+    except UnknownObjectException:
+        log.exception('Resource not found: %s', cached_team['id'])
+    try:
+        repos = {}
+        for repo in team.get_repos():
+            permission = 'pull'
+            if repo.permissions.admin:
+                permission = 'admin'
+            elif repo.permissions.push:
+                permission = 'push'
+
+            repos[repo.name.lower()] = {
+                'permission': permission
+            }
+        cached_team['repos'] = repos
+        return repos
+    except UnknownObjectException:
+        log.exception('Resource not found: %s', cached_team['id'])
+        return []
+
+
+def add_team_repo(repo_name, team_name, profile="github", permission=None):
+    '''
+    Adds a repository to a team with team_name.
+
+    repo_name
+        The name of the repository to add.
+
+    team_name
+        The name of the team of which to add the repository.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    permission
+        The permission for team members within the repository, can be 'pull',
+        'push' or 'admin'. If not specified, the default permission specified on
+        the team will be used.
+
+        .. versionadded:: 2017.7.0
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.add_team_repo 'my_repo' 'team_name'
+
+    .. versionadded:: 2016.11.0
+    '''
+    team = get_team(team_name, profile=profile)
+    if not team:
+        log.error('Team %s does not exist', team_name)
+        return False
+    try:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        team = organization.get_team(team['id'])
+        repo = organization.get_repo(repo_name)
+    except UnknownObjectException:
+        log.exception('Resource not found: %s', team['id'])
+        return False
+    params = None
+    if permission is not None:
+        params = {'permission': permission}
+
+    headers, data = team._requester.requestJsonAndCheck(
+        "PUT",
+        team.url + "/repos/" + repo._identity,
+        input=params
+    )
+    # Try to refresh cache
+    list_team_repos(team_name, profile=profile, ignore_cache=True)
+    return True
+
+
+def remove_team_repo(repo_name, team_name, profile="github"):
+    '''
+    Removes a repository from a team with team_name.
+
+    repo_name
+        The name of the repository to remove.
+
+    team_name
+        The name of the team of which to remove the repository.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.remove_team_repo 'my_repo' 'team_name'
+
+    .. versionadded:: 2016.11.0
+    '''
+    team = get_team(team_name, profile=profile)
+    if not team:
+        log.error('Team %s does not exist', team_name)
+        return False
+    try:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        team = organization.get_team(team['id'])
+        repo = organization.get_repo(repo_name)
+    except UnknownObjectException:
+        log.exception('Resource not found: %s', team['id'])
+        return False
+    team.remove_from_repos(repo)
+    return repo_name not in list_team_repos(team_name, profile=profile, ignore_cache=True)
+
+
+def list_team_members(team_name, profile="github", ignore_cache=False):
+    '''
+    Gets the names of team members in lower case.
+
+    team_name
+        The name of the team from which to list members.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    ignore_cache
+        Bypasses the use of cached team members.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.list_team_members 'team_name'
+
+    .. versionadded:: 2016.11.0
+    '''
+    cached_team = get_team(team_name, profile=profile)
+    if not cached_team:
+        log.error('Team %s does not exist.', team_name)
+        return False
+    # Return from cache if available
+    if cached_team.get('members') and not ignore_cache:
+        return cached_team.get('members')
+
+    try:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        team = organization.get_team(cached_team['id'])
+    except UnknownObjectException:
+        log.exception('Resource not found: %s', cached_team['id'])
+    try:
+        cached_team['members'] = [member.login.lower()
+                                  for member in team.get_members()]
+        return cached_team['members']
+    except UnknownObjectException:
+        log.exception('Resource not found: %s', cached_team['id'])
+        return []
+
+
+def list_members_without_mfa(profile="github", ignore_cache=False):
+    '''
+    List all members (in lower case) without MFA turned on.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    ignore_cache
+        Bypasses the use of cached team repos.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.list_members_without_mfa
+
+    .. versionadded:: 2016.11.0
+    '''
+    key = "github.{0}:non_mfa_users".format(
+        _get_config_value(profile, 'org_name')
+    )
+
+    if key not in __context__ or ignore_cache:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+
+        filter_key = 'filter'
+        # Silly hack to see if we're past PyGithub 1.26.0, where the name of
+        # the filter kwarg changed
+        if hasattr(github.Team.Team, 'membership'):
+            filter_key = 'filter_'
+
+        __context__[key] = [m.login.lower() for m in
+                            _get_members(organization, {filter_key: '2fa_disabled'})]
+    return __context__[key]
+
+
+def is_team_member(name, team_name, profile="github"):
+    '''
+    Returns True if the github user is in the team with team_name, or False
+    otherwise.
+
+    name
+        The name of the user whose membership to check.
+
+    team_name
+        The name of the team to check membership in.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.is_team_member 'user_name' 'team_name'
+
+    .. versionadded:: 2016.11.0
+    '''
+    return name.lower() in list_team_members(team_name, profile=profile)
+
+
+def add_team_member(name, team_name, profile="github"):
+    '''
+    Adds a team member to a team with team_name.
+
+    name
+        The name of the team member to add.
+
+    team_name
+        The name of the team of which to add the user.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.add_team_member 'user_name' 'team_name'
+
+    .. versionadded:: 2016.11.0
+    '''
+    team = get_team(team_name, profile=profile)
+    if not team:
+        log.error('Team %s does not exist', team_name)
+        return False
+    try:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        team = organization.get_team(team['id'])
+        member = client.get_user(name)
+    except UnknownObjectException:
+        log.exception('Resource not found: %s', team['id'])
+        return False
+
+    try:
+        # Can't use team.add_membership due to this bug that hasn't made it into
+        # a PyGithub release yet https://github.com/PyGithub/PyGithub/issues/363
+        headers, data = team._requester.requestJsonAndCheck(
+            "PUT",
+            team.url + "/memberships/" + member._identity,
+            input={'role': 'member'},
+            parameters={'role': 'member'}
+        )
+    except github.GithubException:
+        log.exception('Error in adding a member to a team')
+        return False
+    return True
+
+
+def remove_team_member(name, team_name, profile="github"):
+    '''
+    Removes a team member from a team with team_name.
+
+    name
+        The name of the team member to remove.
+
+    team_name
+        The name of the team from which to remove the user.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.remove_team_member 'user_name' 'team_name'
+
+    .. versionadded:: 2016.11.0
+    '''
+    team = get_team(team_name, profile=profile)
+    if not team:
+        log.error('Team %s does not exist', team_name)
+        return False
+    try:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        team = organization.get_team(team['id'])
+        member = client.get_user(name)
+
+    except UnknownObjectException:
+        log.exception('Resource not found: %s', team['id'])
+        return False
+
+    if not hasattr(team, 'remove_from_members'):
+        return (False, 'PyGithub 1.26.0 or greater is required for team '
+                       'management, please upgrade.')
+
+    team.remove_from_members(member)
+    return not team.has_in_members(member)
+
+
+def list_teams(profile="github", ignore_cache=False):
+    '''
+    Lists all teams with the organization.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    ignore_cache
+        Bypasses the use of cached teams.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.list_teams
+
+    .. versionadded:: 2016.11.0
+    '''
+    key = 'github.{0}:teams'.format(
+        _get_config_value(profile, 'org_name')
+    )
+
+    if key not in __context__ or ignore_cache:
+        client = _get_client(profile)
+        organization = client.get_organization(
+            _get_config_value(profile, 'org_name')
+        )
+        teams_data = organization.get_teams()
+        teams = {}
+        for team in teams_data:
+            # Note that _rawData is used to access some properties here as they
+            # are not exposed in older versions of PyGithub. It's VERY important
+            # to use team._rawData instead of team.raw_data, as the latter forces
+            # an API call to retrieve team details again.
+            teams[team.name] = {
+                'id': team.id,
+                'slug': team.slug,
+                'description': team._rawData['description'],
+                'permission': team.permission,
+                'privacy': team._rawData['privacy']
+            }
+        __context__[key] = teams
+
+    return __context__[key]
+
+
+def get_prs(repo_name=None,
+            profile='github',
+            state='open',
+            head=None,
+            base=None,
+            sort='created',
+            direction='desc',
+            output='min',
+            per_page=None):
+    '''
+    Returns information for all pull requests in a given repository, based on
+    the search options provided.
+
+    .. versionadded:: 2017.7.0
+
+    repo_name
+        The name of the repository for which to list pull requests. This
+        argument is required, either passed via the CLI, or defined in the
+        configured profile. A ``repo_name`` passed as a CLI argument will
+        override the ``repo_name`` defined in the configured profile, if
+        provided.
+
+    profile
+        The name of the profile configuration to use. Defaults to ``github``.
+
+    state
+        Indicates the state of the pull requests to return. Can be either
+        ``open``, ``closed``, or ``all``. Default is ``open``.
+
+    head
+        Filter pull requests by head user and branch name in the format of
+        ``user:ref-name``. Example: ``'github:new-script-format'``. Default
+        is ``None``.
+
+    base
+        Filter pulls by base branch name. Example: ``gh-pages``. Default is
+        ``None``.
+
+    sort
+        What to sort results by. Can be either ``created``, ``updated``,
+        ``popularity`` (comment count), or ``long-running`` (age, filtering
+        by pull requests updated within the last month). Default is ``created``.
+
+    direction
+        The direction of the sort. Can be either ``asc`` or ``desc``. Default
+        is ``desc``.
+
+    output
+        The amount of data returned by each pull request. Defaults to ``min``.
+        Change to ``full`` to see all pull request output.
+
+    per_page
+        GitHub paginates data in their API calls. Use this value to increase or
+        decrease the number of pull requests gathered from GitHub, per page. If
+        not set, GitHub defaults are used. Maximum is 100.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion github.get_prs
+        salt myminion github.get_prs base=2016.11
+    '''
+    org_name = _get_config_value(profile, 'org_name')
+    if repo_name is None:
+        repo_name = _get_config_value(profile, 'repo_name')
+
+    action = '/'.join(['repos', org_name, repo_name])
+    args = {}
+
+    # Build API arguments, as necessary.
+    if head:
+        args['head'] = head
+    if base:
+        args['base'] = base
+    if per_page:
+        args['per_page'] = per_page
+
+    # Only pass the following API args if they're not the defaults listed.
+    if state and state != 'open':
+        args['state'] = state
+    if sort and sort != 'created':
+        args['sort'] = sort
+    if direction and direction != 'desc':
+        args['direction'] = direction
+
+    ret = {}
+    prs = _query(profile, action=action, command='pulls', args=args)
+
+    for pr_ in prs:
+        pr_id = pr_.get('id')
+        if output == 'full':
+            ret[pr_id] = pr_
+        else:
+            ret[pr_id] = _format_pr(pr_)
+
+    return ret
+
+
+def _format_pr(pr_):
+    '''
+    Helper function to format API return information into a more manageable
+    and useful dictionary for pull request information.
+
+    pr_
+        The pull request to format.
+    '''
+    ret = {'id': pr_.get('id'),
+           'pr_number': pr_.get('number'),
+           'state': pr_.get('state'),
+           'title': pr_.get('title'),
+           'user': pr_.get('user').get('login'),
+           'html_url': pr_.get('html_url'),
+           'base_branch': pr_.get('base').get('ref')}
+
+    return ret
 
 
 def _format_issue(issue):
@@ -891,7 +1888,7 @@ def _query(profile,
     if command:
         url += '/{0}'.format(command)
 
-    log.debug('GitHub URL: {0}'.format(url))
+    log.debug('GitHub URL: %s', url)
 
     if 'access_token' not in args.keys():
         args['access_token'] = _get_config_value(profile, 'token')
@@ -929,11 +1926,8 @@ def _query(profile,
                                        hide_fields=['access_token'],
                                        opts=__opts__,
                                        )
-        log.debug(
-            'GitHub Response Status Code: {0}'.format(
-                result['status']
-            )
-        )
+        log.debug('GitHub Response Status Code: %s',
+                  result['status'])
 
         if result['status'] == 200:
             if isinstance(result['dict'], dict):

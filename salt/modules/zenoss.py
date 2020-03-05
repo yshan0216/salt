@@ -4,6 +4,8 @@ Module for working with the Zenoss API
 
 .. versionadded:: 2016.3.0
 
+:depends: requests
+
 :configuration: This module requires a 'zenoss' entry in the master/minion config.
 
     For example:
@@ -17,9 +19,8 @@ Module for working with the Zenoss API
 '''
 
 
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 import re
-import json
 import logging
 
 try:
@@ -28,6 +29,7 @@ try:
 except ImportError:
     HAS_LIBS = False
 
+import salt.utils.json
 
 # Disable INFO level logs from requests/urllib3
 urllib3_logger = logging.getLogger('urllib3')
@@ -36,13 +38,19 @@ urllib3_logger.setLevel(logging.WARNING)
 
 log = logging.getLogger(__name__)
 
+__virtualname__ = 'zenoss'
+
 
 def __virtual__():
     '''
     Only load if requests is installed
     '''
     if HAS_LIBS:
-        return 'zenoss'
+        return __virtualname__
+    else:
+        return False, 'The \'{0}\' module could not be loaded: ' \
+                      '\'requests\' is not installed.'.format(__virtualname__)
+
 
 ROUTERS = {'MessagingRouter': 'messaging',
            'EventsRouter': 'evconsole',
@@ -77,7 +85,7 @@ def _router_request(router, method, data=None):
     if router not in ROUTERS:
         return False
 
-    req_data = json.dumps([dict(
+    req_data = salt.utils.json.dumps([dict(
         action=router,
         method=method,
         data=data,
@@ -96,7 +104,7 @@ def _router_request(router, method, data=None):
         log.error('Request failed. Bad username/password.')
         raise Exception('Request failed. Bad username/password.')
 
-    return json.loads(response.content).get('result', None)
+    return salt.utils.json.loads(response.content).get('result', None)
 
 
 def _determine_device_class():

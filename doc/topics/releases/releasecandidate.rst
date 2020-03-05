@@ -1,44 +1,73 @@
 :orphan:
 
+.. _release-candidate:
+
 ===========================================
 Installing/Testing a Salt Release Candidate
 ===========================================
 
 It's time for a new feature release of Salt! Follow the instructions below to
-install the latest release candidate of Salt, and try :doc:`all the shiny new
-features </topics/releases/2016.3.0>`! Be sure to report any bugs you find on `Github
+install the latest release candidate of Salt, and try :ref:`all the shiny new
+features <release-2019-2-0>`! Be sure to report any bugs you find on `Github
 <https://github.com/saltstack/salt/issues/new/>`_.
 
 Installing Using Packages
 =========================
 
-Builds for a few platforms are available as part of the RC at:
-
-- https://repo.saltstack.com/salt_rc/
-- https://repo.saltstack.com/freebsd/salt_rc/
+Builds for a few platforms are available as part of the RC at https://repo.saltstack.com/salt_rc/.
 
 .. note::
 
-    For RHEL and Ubuntu, Follow the instructions on
-    https://repo.saltstack.com/, but insert ``salt_rc/`` into the URL between
-    the hostname and the remainder of the path.  For example:
+    Follow the instructions on https://repo.saltstack.com/,
+    but insert ``salt_rc/`` into the URL between the hostname
+    and the remainder of the path.
 
-    .. code-block::
+    For Redhat Python 2
+
+    .. code-block:: bash
 
         baseurl=https://repo.saltstack.com/salt_rc/yum/redhat/$releasever/$basearch/
 
-    .. code-block::
+    For Redhat Python 3
 
-        deb http://repo.saltstack.com/salt_rc/apt/ubuntu/14.04/amd64 jessie main
+    .. code-block:: bash
+
+        baseurl=https://repo.saltstack.com/salt_rc/py3/redhat/$releasever/$basearch/
+
+    For Ubuntu Python 2
+
+    .. code-block:: none
+
+        deb http://repo.saltstack.com/salt_rc/apt/ubuntu/18.04/amd64 bionic main
+
+    For Ubuntu Python 3
+
+    .. code-block:: none
+
+        deb http://repo.saltstack.com/salt_rc/py3/ubuntu/18.04/amd64 bionic main
+
+    For Debian Python 2
+
+    .. code-block:: none
+
+        deb http://repo.saltstack.com/salt_rc/apt/debian/9/amd64 stretch main
+
+    For Debian Python 3
+
+    .. code-block:: none
+
+        deb http://repo.saltstack.com/salt_rc/py3/debian/9/amd64 stretch main
+
 
 Available builds:
 
+- Ubuntu 18
+- Debian 9
+- Redhat 7
 - Windows
-- Mac OS X
-- RHEL 6
-- RHEL 7
-- Ubuntu 14.04
-- FreeBSD
+- OSX
+
+.. FreeBSD
 
 Installing Using Bootstrap
 ==========================
@@ -49,14 +78,14 @@ You can install a release candidate of Salt using `Salt Bootstrap
 .. code-block:: bash
 
     curl -o install_salt.sh -L https://bootstrap.saltstack.com
-    sudo sh install_salt.sh -P git v2016.3.0rc2
+    sudo sh install_salt.sh -P git v2019.2.0rc2
 
 If you want to also install a master using Salt Bootstrap, use the ``-M`` flag:
 
 .. code-block:: bash
 
     curl -o install_salt.sh -L https://bootstrap.saltstack.com
-    sudo sh install_salt.sh -P -M git v2016.3.0rc2
+    sudo sh install_salt.sh -P -M git v2019.2.0rc2
 
 If you want to install only a master and not a minion using Salt Bootstrap, use
 the ``-M`` and ``-N`` flags:
@@ -64,13 +93,13 @@ the ``-M`` and ``-N`` flags:
 .. code-block:: bash
 
     curl -o install_salt.sh -L https://bootstrap.saltstack.com
-    sudo sh install_salt.sh -P -M -N git v2016.3.0rc2
+    sudo sh install_salt.sh -P -M -N git v2019.2.0rc2
 
 Installing Using PyPI
 =====================
 
 Installing from the `source archive
-<https://pypi.python.org/packages/source/s/salt/salt-2016.3.0rc2.tar.gz>`_ on
+<https://pypi.python.org/pypi?:action=display&name=salt&version=2019.2.0rc2>`_ on
 `PyPI <https://pypi.python.org/pypi>`_ is fairly straightforward.
 
 .. note::
@@ -108,4 +137,4 @@ Then install salt using the following command:
 
 .. code-block:: bash
 
-    sudo pip install salt==2016.3.0rc2
+    sudo pip install salt==2019.2.0rc2

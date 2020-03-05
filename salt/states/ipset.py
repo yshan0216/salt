@@ -52,9 +52,9 @@ in IPTables Firewalls.
       ipset.flush:
 
 '''
-from __future__ import absolute_import
-
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
+
 log = logging.getLogger(__name__)
 
 
@@ -182,9 +182,8 @@ def present(name, entry=None, family='ipv4', **kwargs):
     '''
     ret = {'name': name,
            'changes': {},
-           'result': None,
+           'result': True,
            'comment': ''}
-    test_flag = False
 
     if not entry:
         ret['result'] = False
@@ -198,35 +197,33 @@ def present(name, entry=None, family='ipv4', **kwargs):
         entries.append(entry)
 
     for entry in entries:
-        _entry = '{0}'.format(entry)
-        if 'timeout' in kwargs:
-            if 'comment' in _entry:
-                _entry = '{0} timeout {1} {2} {3}'.format(entry.split()[0], kwargs['timeout'], entry.split()[1], entry.split()[2])
-            else:
-                _entry = '{0} timeout {1}'.format(entry.split()[0], kwargs['timeout'])
+        entry_opts = ''
+        if ' ' in entry:
+            entry, entry_opts = entry.split(' ', 1)
+        if 'timeout' in kwargs and 'timeout' not in entry_opts:
+            entry_opts = 'timeout {0} {1}'.format(kwargs['timeout'], entry_opts)
+        if 'comment' in kwargs and 'comment' not in entry_opts:
+            entry_opts = '{0} comment "{1}"'.format(entry_opts, kwargs['comment'])
+        _entry = ' '.join([entry, entry_opts.lstrip()]).strip()
 
         if __salt__['ipset.check'](kwargs['set_name'],
                                    _entry,
                                    family) is True:
-            if test_flag is False:
-                ret['result'] = True
             ret['comment'] += 'entry for {0} already in set {1} for {2}\n'.format(
                 entry,
                 kwargs['set_name'],
                 family)
         else:
             if __opts__['test']:
-                test_flag = True
                 ret['result'] = None
                 ret['comment'] += 'entry {0} would be added to set {1} for family {2}\n'.format(
                     entry,
                     kwargs['set_name'],
                     family)
             else:
-                command = __salt__['ipset.add'](kwargs['set_name'], entry, family, **kwargs)
+                command = __salt__['ipset.add'](kwargs['set_name'], _entry, family, **kwargs)
                 if 'Error' not in command:
                     ret['changes'] = {'locale': name}
-                    ret['result'] = True
                     ret['comment'] += 'entry {0} added to set {1} for family {2}\n'.format(
                         _entry,
                         kwargs['set_name'],
@@ -255,7 +252,7 @@ def absent(name, entry=None, entries=None, family='ipv4', **kwargs):
     '''
     ret = {'name': name,
            'changes': {},
-           'result': None,
+           'result': True,
            'comment': ''}
 
     if not entry:
@@ -270,12 +267,16 @@ def absent(name, entry=None, entries=None, family='ipv4', **kwargs):
         entries.append(entry)
 
     for entry in entries:
-        _entry = '{0}'.format(entry)
+        entry_opts = ''
+        if ' ' in entry:
+            entry, entry_opts = entry.split(' ', 1)
+        if 'timeout' in kwargs and 'timeout' not in entry_opts:
+            entry_opts = 'timeout {0} {1}'.format(kwargs['timeout'], entry_opts)
+        if 'comment' in kwargs and 'comment' not in entry_opts:
+            entry_opts = '{0} comment "{1}"'.format(entry_opts, kwargs['comment'])
+        _entry = ' '.join([entry, entry_opts]).strip()
 
-        if 'comment' in kwargs:
-            _entry = '{0} comment "{1}"'.format(entry, kwargs['comment'])
-
-        log.debug('_entry {0}'.format(_entry))
+        log.debug('_entry %s', _entry)
         if not __salt__['ipset.check'](kwargs['set_name'],
                                       _entry,
                                       family) is True:
@@ -285,8 +286,8 @@ def absent(name, entry=None, entries=None, family='ipv4', **kwargs):
                 kwargs['set_name'],
                 family)
         else:
-
             if __opts__['test']:
+                ret['result'] = None
                 ret['comment'] += 'ipset entry {0} would be removed from set {1} for {2}\n'.format(
                     entry,
                     kwargs['set_name'],

@@ -1,18 +1,19 @@
 # -*- coding: utf-8 -*-
 '''
-Grains for Cisco NX OS Switches Proxy minions
+Grains for Cisco NX-OS minions
 
-.. versionadded: Carbon
+.. versionadded: 2016.11.0
 
 For documentation on setting up the nxos proxy minion look in the documentation
-for :doc:`salt.proxy.nxos</ref/proxy/all/salt.proxy.nxos>`.
+for :mod:`salt.proxy.nxos<salt.proxy.nxos>`.
 '''
 # Import Python Libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
 # Import Salt Libs
-import salt.utils
-import salt.modules.nxos
+import salt.utils.platform
+import salt.utils.nxos
+from salt.exceptions import NxosClientError
 
 import logging
 log = logging.getLogger(__name__)
@@ -23,17 +24,20 @@ __virtualname__ = 'nxos'
 
 def __virtual__():
     try:
-        if salt.utils.is_proxy() and __opts__['proxy']['proxytype'] == 'nxos':
-            return __virtualname__
-    except KeyError:
-        pass
+        salt.utils.nxos.version_info()
+    except NxosClientError as err:
+        return False, err
 
-    return False
+    return __virtualname__
 
 
-def proxy_functions(proxy=None):
-    if proxy is None:
-        return {}
-    if proxy['nxos.initialized']() is False:
-        return {}
-    return {'nxos': proxy['nxos.grains']()}
+def system_information(proxy=None):
+    if salt.utils.platform.is_proxy():
+        if proxy is None:
+            return {}
+        if proxy['nxos.initialized']() is False:
+            return {}
+        return {'nxos': proxy['nxos.grains']()}
+    else:
+        data = salt.utils.nxos.version_info()
+        return salt.utils.nxos.system_info(data)

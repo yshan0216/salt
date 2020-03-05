@@ -8,15 +8,16 @@ Module for managing PowerShell through PowerShellGet (PSGet)
 
 Support for PowerShell
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
-# Import python libs
-import copy
+# Import Python libs
 import logging
-import json
+import xml.etree.ElementTree
 
-# Import salt libs
-import salt.utils
+# Import Salt libs
+import salt.utils.platform
+import salt.utils.versions
+from salt.exceptions import CommandExecutionError
 
 # Set up logging
 log = logging.getLogger(__name__)
@@ -29,43 +30,76 @@ def __virtual__():
     '''
     Set the system module of the kernel is Windows
     '''
-    if not salt.utils.is_windows():
-        return (False, 'Module PSGet: Module only works on Windows systems ')
+    # Verify Windows
+    if not salt.utils.platform.is_windows():
+        log.debug('Module PSGet: Only available on Windows systems')
+        return False, 'Module PSGet: Only available on Windows systems'
 
-    if psversion() < 5:
-        return (False, 'Module PSGet: Module only works with PowerShell 5 or later.')
+    # Verify PowerShell
+    powershell_info = __salt__['cmd.shell_info']('powershell')
+    if not powershell_info['installed']:
+        log.debug('Module PSGet: Requires PowerShell')
+        return False, 'Module PSGet: Requires PowerShell'
+
+    # Verify PowerShell 5.0 or greater
+    if salt.utils.versions.compare(powershell_info['version'], '<', '5.0'):
+        log.debug('Module PSGet: Requires PowerShell 5 or newer')
+        return False, 'Module PSGet: Requires PowerShell 5 or newer.'
 
     return __virtualname__
 
 
-def _pshell(cmd, cwd=None):
+def _ps_xml_to_dict(parent, dic=None):
+    '''
+    Formats powershell Xml to a dict.
+    Note: This _ps_xml_to_dict is not perfect with powershell Xml.
+    '''
+
+    if dic is None:
+        dic = {}
+
+    for child in parent:
+        if list(child):
+            new_dic = _ps_xml_to_dict(child, {})
+            if "Name" in new_dic:
+                dic[new_dic["Name"]] = new_dic
+            else:
+                try:
+                    dic[[name for ps_type, name in child.items() if ps_type == "Type"][0]] = new_dic
+                except IndexError:
+                    dic[child.text] = new_dic
+        else:
+            for xml_type, name in child.items():
+                if xml_type == "Name":
+                    dic[name] = child.text
+
+    return dic
+
+
+def _pshell(cmd, cwd=None, depth=2):
     '''
     Execute the desired powershell command and ensure that it returns data
-    in json format and load that into python
+    in Xml format and load that into python
     '''
-    if 'convertto-json' not in cmd.lower():
-        cmd = ' '.join([cmd, '| ConvertTo-Json'])
-    log.debug('PSGET: {0}'.format(cmd))
-    ret = __salt__['cmd.shell'](cmd, shell='powershell', cwd=cwd)
+
+    cmd = '{0} | ConvertTo-Xml -Depth {1} -As \"stream\"'.format(cmd, depth)
+    log.debug('DSC: %s', cmd)
+
+    results = __salt__['cmd.run_all'](cmd, shell='powershell', cwd=cwd, python_shell=True)
+
+    if 'pid' in results:
+        del results['pid']
+
+    if 'retcode' not in results or results['retcode'] != 0:
+        # run_all logs an error to log.error, fail hard back to the user
+        raise CommandExecutionError('Issue executing powershell {0}'.format(cmd), info=results)
+
     try:
-        ret = json.loads(ret, strict=False)
-    except ValueError:
-        log.debug('Json not returned')
-    return ret
+        ret = _ps_xml_to_dict(xml.etree.ElementTree.fromstring(results['stdout'].encode('utf-8')))
+    except xml.etree.ElementTree.ParseError:
+        results['stdout'] = results['stdout'][:1000] + ". . ."
+        raise CommandExecutionError('No XML results from powershell', info=results)
 
-
-def psversion():
-    '''
-    Returns the Powershell version
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt 'win01' dsc.psversion
-    '''
-    cmd = '$PSVersionTable.PSVersion.Major'
-    ret = _pshell(cmd)
     return ret
 
 
@@ -80,8 +114,8 @@ def bootstrap():
 
         salt 'win01' psget.bootstrap
     '''
-    cmd = 'Get-PackageProvider -Name NuGet -ForceBootstrap'
-    ret = _pshell(cmd)
+    cmd = 'Get-PackageProvider -Name NuGet -ForceBootstrap | Select Name, Version, ProviderPath'
+    ret = _pshell(cmd, depth=1)
     return ret
 
 
@@ -99,12 +133,13 @@ def avail_modules(desc=False):
         salt 'win01' psget.avail_modules
         salt 'win01' psget.avail_modules desc=True
     '''
-    cmd = 'Find-Module'
-    modules = _pshell(cmd)
+    cmd = 'Find-Module | Select Name, Description'
+    modules = _pshell(cmd, depth=1)
     names = []
     if desc:
         names = {}
-    for module in modules:
+    for key in modules:
+        module = modules[key]
         if desc:
             names[module['Name']] = module['Description']
             continue
@@ -128,19 +163,11 @@ def list_modules(desc=False):
     '''
     cmd = 'Get-InstalledModule'
     modules = _pshell(cmd)
-    if isinstance(modules, dict):
-        ret = []
-        if desc:
-            modules_ret = {}
-            modules_ret[modules['Name']] = copy.deepcopy(modules)
-            modules = modules_ret
-            return modules
-        ret.append(modules['Name'])
-        return ret
     names = []
     if desc:
         names = {}
-    for module in modules:
+    for key in modules:
+        module = modules[key]
         if desc:
             names[module['Name']] = module
             continue

@@ -4,13 +4,13 @@ Module for managing IIS SMTP server configuration on Windows servers.
 
 '''
 
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals, print_function
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 
 # Import salt libs
-import salt.utils
+import salt.utils.args
 
 _DEFAULT_SERVER = 'SmtpSvc/1'
 
@@ -39,7 +39,7 @@ def _normalize_server_settings(**settings):
     Convert setting values that has been improperly converted to a dict back to a string.
     '''
     ret = dict()
-    settings = salt.utils.clean_kwargs(**settings)
+    settings = salt.utils.args.clean_kwargs(**settings)
 
     for setting in settings:
         if isinstance(settings[setting], dict):
@@ -54,10 +54,30 @@ def _normalize_server_settings(**settings):
 def server_setting(name, settings=None, server=_DEFAULT_SERVER):
     '''
     Ensure the value is set for the specified setting.
+
+    .. note::
+
+        The setting names are case-sensitive.
+
+    :param str settings: A dictionary of the setting names and their values.
+    :param str server: The SMTP server name.
+
+    Example of usage:
+
+    .. code-block:: yaml
+
+        smtp-settings:
+            win_smtp_server.server_setting:
+                - settings:
+                    LogType: 1
+                    LogFilePeriod: 1
+                    MaxMessageSize: 16777216
+                    MaxRecipients: 10000
+                    MaxSessionSize: 16777216
     '''
     ret = {'name': name,
            'changes': {},
-           'comment': str(),
+           'comment': six.text_type(),
            'result': None}
 
     if not settings:
@@ -76,7 +96,7 @@ def server_setting(name, settings=None, server=_DEFAULT_SERVER):
         # automatically on input, so convert them back to the proper format.
         settings = _normalize_server_settings(**settings)
 
-        if str(settings[key]) != str(current_settings[key]):
+        if six.text_type(settings[key]) != six.text_type(current_settings[key]):
             ret_settings['changes'][key] = {'old': current_settings[key],
                                             'new': settings[key]}
     if not ret_settings['changes']:
@@ -92,7 +112,7 @@ def server_setting(name, settings=None, server=_DEFAULT_SERVER):
     new_settings = __salt__['win_smtp_server.get_server_setting'](settings=settings.keys(),
                                                                   server=server)
     for key in settings:
-        if str(new_settings[key]) != str(settings[key]):
+        if six.text_type(new_settings[key]) != six.text_type(settings[key]):
             ret_settings['failures'][key] = {'old': current_settings[key],
                                              'new': new_settings[key]}
             ret_settings['changes'].pop(key, None)
@@ -111,10 +131,21 @@ def server_setting(name, settings=None, server=_DEFAULT_SERVER):
 def active_log_format(name, log_format, server=_DEFAULT_SERVER):
     '''
     Manage the active log format for the SMTP server.
+
+    :param str log_format: The log format name.
+    :param str server: The SMTP server name.
+
+    Example of usage:
+
+    .. code-block:: yaml
+
+        smtp-log-format:
+            win_smtp_server.active_log_format:
+                - log_format: Microsoft IIS Log File Format
     '''
     ret = {'name': name,
            'changes': {},
-           'comment': str(),
+           'comment': six.text_type(),
            'result': None}
     current_log_format = __salt__['win_smtp_server.get_log_format'](server)
 
@@ -136,10 +167,46 @@ def active_log_format(name, log_format, server=_DEFAULT_SERVER):
 def connection_ip_list(name, addresses=None, grant_by_default=False, server=_DEFAULT_SERVER):
     '''
     Manage IP list for SMTP connections.
+
+    :param str addresses: A dictionary of IP + subnet pairs.
+    :param bool grant_by_default: Whether the addresses should be a blacklist or whitelist.
+    :param str server: The SMTP server name.
+
+    Example of usage for creating a whitelist:
+
+    .. code-block:: yaml
+
+        smtp-connection-whitelist:
+            win_smtp_server.connection_ip_list:
+                - addresses:
+                    127.0.0.1: 255.255.255.255
+                    172.16.1.98: 255.255.255.255
+                    172.16.1.99: 255.255.255.255
+                - grant_by_default: False
+
+    Example of usage for creating a blacklist:
+
+    .. code-block:: yaml
+
+        smtp-connection-blacklist:
+            win_smtp_server.connection_ip_list:
+                - addresses:
+                    172.16.1.100: 255.255.255.255
+                    172.16.1.101: 255.255.255.255
+                - grant_by_default: True
+
+    Example of usage for allowing any source to connect:
+
+    .. code-block:: yaml
+
+        smtp-connection-blacklist:
+            win_smtp_server.connection_ip_list:
+                - addresses: {}
+                - grant_by_default: True
     '''
     ret = {'name': name,
            'changes': {},
-           'comment': str(),
+           'comment': six.text_type(),
            'result': None}
     if not addresses:
         addresses = dict()
@@ -166,10 +233,76 @@ def connection_ip_list(name, addresses=None, grant_by_default=False, server=_DEF
 def relay_ip_list(name, addresses=None, server=_DEFAULT_SERVER):
     '''
     Manage IP list for SMTP relay connections.
+
+    Due to the unusual way that Windows stores the relay IPs, it is advisable to retrieve
+    the existing list you wish to set from a pre-configured server.
+
+    For example, setting '127.0.0.1' as an allowed relay IP through the GUI would generate
+    an actual relay IP list similar to the following:
+
+    .. code-block:: cfg
+
+        ['24.0.0.128', '32.0.0.128', '60.0.0.128', '68.0.0.128', '1.0.0.0', '76.0.0.0',
+          '0.0.0.0', '0.0.0.0', '1.0.0.0', '1.0.0.0', '2.0.0.0', '2.0.0.0', '4.0.0.0',
+          '0.0.0.0', '76.0.0.128', '0.0.0.0', '0.0.0.0', '0.0.0.0', '0.0.0.0',
+          '255.255.255.255', '127.0.0.1']
+
+    .. note::
+
+        Setting the list to None corresponds to the restrictive 'Only the list below' GUI parameter
+        with an empty access list configured, and setting an empty list/tuple corresponds to the
+        more permissive 'All except the list below' GUI parameter.
+
+    :param str addresses: A list of the relay IPs. The order of the list is important.
+    :param str server: The SMTP server name.
+
+    Example of usage:
+
+    .. code-block:: yaml
+
+        smtp-relay-list:
+          win_smtp_server.relay_ip_list:
+            - addresses:
+                - 24.0.0.128
+                - 32.0.0.128
+                - 60.0.0.128
+                - 1.0.0.0
+                - 76.0.0.0
+                - 0.0.0.0
+                - 0.0.0.0
+                - 1.0.0.0
+                - 1.0.0.0
+                - 2.0.0.0
+                - 2.0.0.0
+                - 4.0.0.0
+                - 0.0.0.0
+                - 76.0.0.128
+                - 0.0.0.0
+                - 0.0.0.0
+                - 0.0.0.0
+                - 0.0.0.0
+                - 255.255.255.255
+                - 127.0.0.1
+
+    Example of usage for disabling relaying:
+
+    .. code-block:: yaml
+
+        smtp-relay-list:
+            win_smtp_server.relay_ip_list:
+                - addresses: None
+
+    Example of usage for allowing relaying from any source:
+
+    .. code-block:: yaml
+
+        smtp-relay-list:
+            win_smtp_server.relay_ip_list:
+                - addresses: []
     '''
     ret = {'name': name,
            'changes': {},
-           'comment': str(),
+           'comment': six.text_type(),
            'result': None}
     current_addresses = __salt__['win_smtp_server.get_relay_ip_list'](server=server)
 

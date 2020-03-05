@@ -4,14 +4,15 @@ Nova class
 '''
 
 # Import Python libs
-from __future__ import absolute_import, with_statement
-from distutils.version import LooseVersion
-import time
+from __future__ import absolute_import, with_statement, unicode_literals, print_function
 import inspect
 import logging
+import time
+import re
+import json
 
 # Import third party libs
-import salt.ext.six as six
+from salt.ext import six
 HAS_NOVA = False
 # pylint: disable=import-error
 try:
@@ -19,24 +20,34 @@ try:
     from novaclient import client
     from novaclient.shell import OpenStackComputeShell
     import novaclient.utils
-    import novaclient.auth_plugin
     import novaclient.exceptions
     import novaclient.extension
     import novaclient.base
     HAS_NOVA = True
 except ImportError:
     pass
+
+HAS_KEYSTONEAUTH = False
+try:
+    import keystoneauth1.loading
+    import keystoneauth1.session
+    HAS_KEYSTONEAUTH = True
+except ImportError:
+    pass
 # pylint: enable=import-error
 
 # Import salt libs
-import salt.utils
+import salt.utils.cloud
+import salt.utils.files
 from salt.exceptions import SaltCloudSystemExit
+from salt.utils.versions import LooseVersion as _LooseVersion
 
 # Get logging started
 log = logging.getLogger(__name__)
 
 # Version added to novaclient.client.Client function
 NOVACLIENT_MINVER = '2.6.1'
+NOVACLIENT_MAXVER = '6.0.1'
 
 # dict for block_device_mapping_v2
 CLIENT_BDM2_KEYS = {
@@ -54,13 +65,24 @@ CLIENT_BDM2_KEYS = {
 
 
 def check_nova():
+    '''
+    Check version of novaclient
+    '''
     if HAS_NOVA:
-        novaclient_ver = LooseVersion(novaclient.__version__)
-        min_ver = LooseVersion(NOVACLIENT_MINVER)
-        if novaclient_ver >= min_ver:
+        novaclient_ver = _LooseVersion(novaclient.__version__)
+        min_ver = _LooseVersion(NOVACLIENT_MINVER)
+        if min_ver <= novaclient_ver:
             return HAS_NOVA
-        log.debug('Newer novaclient version required.  Minimum: {0}'.format(NOVACLIENT_MINVER))
+        log.debug('Newer novaclient version required.  Minimum: %s', NOVACLIENT_MINVER)
     return False
+
+
+if check_nova():
+    try:
+        import novaclient.auth_plugin
+    except ImportError:
+        log.debug('Using novaclient version 7.0.0 or newer. Authentication '
+                  'plugin auth_plugin.py is not available anymore.')
 
 
 # kwargs has to be an object instead of a dictionary for the __post_parse_arg__
@@ -169,6 +191,25 @@ def get_entry(dict_, key, value, raise_error=True):
     return {}
 
 
+def get_entry_multi(dict_, pairs, raise_error=True):
+    for entry in dict_:
+        if all([entry[key] == value for key, value in pairs]):
+            return entry
+    if raise_error is True:
+        raise SaltCloudSystemExit('Unable to find {0} in {1}.'.format(pairs, dict_))
+    return {}
+
+
+def get_endpoint_url_v3(catalog, service_type, region_name):
+    for service_entry in catalog:
+        if service_entry['type'] == service_type:
+            for endpoint_entry in service_entry['endpoints']:
+                if (endpoint_entry['region'] == region_name and
+                        endpoint_entry['interface'] == 'public'):
+                    return endpoint_entry['url']
+    return None
+
+
 def sanatize_novaclient(kwargs):
     variables = (
         'username', 'api_key', 'project_id', 'auth_url', 'insecure',
@@ -201,11 +242,124 @@ class SaltNova(object):
         region_name=None,
         password=None,
         os_auth_plugin=None,
+        use_keystoneauth=False,
         **kwargs
     ):
         '''
         Set up nova credentials
         '''
+        if all([use_keystoneauth, HAS_KEYSTONEAUTH]):
+            self._new_init(username=username,
+                           project_id=project_id,
+                           auth_url=auth_url,
+                           region_name=region_name,
+                           password=password,
+                           os_auth_plugin=os_auth_plugin,
+                           **kwargs)
+        else:
+            self._old_init(username=username,
+                           project_id=project_id,
+                           auth_url=auth_url,
+                           region_name=region_name,
+                           password=password,
+                           os_auth_plugin=os_auth_plugin,
+                           **kwargs)
+
+    def _get_version_from_url(self, url):
+        '''
+        Exctract API version from provided URL
+        '''
+        regex = re.compile(r"^https?:\/\/.*\/(v[0-9])(\.[0-9])?(\/)?$")
+        try:
+            ver = regex.match(url)
+            if ver.group(1):
+                retver = ver.group(1)
+                if ver.group(2):
+                    retver = retver + ver.group(2)
+            return retver
+        except AttributeError:
+            return ''
+
+    def _discover_ks_version(self, url):
+        '''
+        Keystone API version discovery
+        '''
+        result = salt.utils.http.query(url, backend='requests', status=True, decode=True, decode_type='json')
+        versions = json.loads(result['body'])
+        try:
+            links = [ver['links'] for ver in versions['versions']['values'] if ver['status'] == 'stable'][0] \
+                    if result['status'] == 300 else versions['version']['links']
+            resurl = [link['href'] for link in links if link['rel'] == 'self'][0]
+            return self._get_version_from_url(resurl)
+        except KeyError as exc:
+            raise SaltCloudSystemExit('KeyError: key {0} not found in API response: {1}'.format(exc, versions))
+
+    def _new_init(self, username, project_id, auth_url, region_name, password, os_auth_plugin, auth=None, **kwargs):
+        if auth is None:
+            auth = {}
+
+        ks_version = self._get_version_from_url(auth_url)
+        if not ks_version:
+            ks_version = self._discover_ks_version(auth_url)
+            auth_url = '{0}/{1}'.format(auth_url, ks_version)
+
+        loader = keystoneauth1.loading.get_plugin_loader(os_auth_plugin or 'password')
+
+        self.client_kwargs = kwargs.copy()
+        self.kwargs = auth.copy()
+        if not self.extensions:
+            if hasattr(OpenStackComputeShell, '_discover_extensions'):
+                self.extensions = OpenStackComputeShell()._discover_extensions('2.0')
+            else:
+                self.extensions = client.discover_extensions('2.0')
+            for extension in self.extensions:
+                extension.run_hooks('__pre_parse_args__')
+            self.client_kwargs['extensions'] = self.extensions
+
+        self.kwargs['username'] = username
+        self.kwargs['project_name'] = project_id
+        self.kwargs['auth_url'] = auth_url
+        self.kwargs['password'] = password
+        if ks_version == 'v3':
+            self.kwargs['project_id'] = kwargs.get('project_id')
+            self.kwargs['project_name'] = kwargs.get('project_name')
+            self.kwargs['user_domain_name'] = kwargs.get('user_domain_name', 'default')
+            self.kwargs['project_domain_name'] = kwargs.get('project_domain_name', 'default')
+
+        self.client_kwargs['region_name'] = region_name
+        self.client_kwargs['service_type'] = 'compute'
+
+        if hasattr(self, 'extensions'):
+            # needs an object, not a dictionary
+            self.kwargstruct = KwargsStruct(**self.client_kwargs)
+            for extension in self.extensions:
+                extension.run_hooks('__post_parse_args__', self.kwargstruct)
+            self.client_kwargs = self.kwargstruct.__dict__
+
+        # Requires novaclient version >= 2.6.1
+        self.version = six.text_type(kwargs.get('version', 2))
+
+        self.client_kwargs = sanatize_novaclient(self.client_kwargs)
+        options = loader.load_from_options(**self.kwargs)
+        self.session = keystoneauth1.session.Session(auth=options)
+        conn = client.Client(version=self.version, session=self.session, **self.client_kwargs)
+        self.kwargs['auth_token'] = conn.client.session.get_token()
+        identity_service_type = kwargs.get('identity_service_type', 'identity')
+        self.catalog = conn.client.session.get('/' + ks_version + '/auth/catalog',
+                                               endpoint_filter={'service_type': identity_service_type}
+                                               ).json().get('catalog', [])
+        for ep_type in self.catalog:
+            if ep_type['type'] == identity_service_type:
+                for ep_id in ep_type['endpoints']:
+                    ep_ks_version = self._get_version_from_url(ep_id['url'])
+                    if not ep_ks_version:
+                        ep_id['url'] = '{0}/{1}'.format(ep_id['url'], ks_version)
+        if ks_version == 'v3':
+            self._v3_setup(region_name)
+        else:
+            self._v2_setup(region_name)
+
+    def _old_init(self, username, project_id, auth_url, region_name, password, os_auth_plugin, **kwargs):
         self.kwargs = kwargs.copy()
         if not self.extensions:
             if hasattr(OpenStackComputeShell, '_discover_extensions'):
@@ -246,7 +400,7 @@ class SaltNova(object):
         self.kwargs = sanatize_novaclient(self.kwargs)
 
         # Requires novaclient version >= 2.6.1
-        self.kwargs['version'] = str(kwargs.get('version', 2))
+        self.kwargs['version'] = six.text_type(kwargs.get('version', 2))
 
         conn = client.Client(**self.kwargs)
         try:
@@ -259,6 +413,28 @@ class SaltNova(object):
         self.kwargs['auth_token'] = conn.client.auth_token
         self.catalog = conn.client.service_catalog.catalog['access']['serviceCatalog']
 
+        self._v2_setup(region_name)
+
+    def _v3_setup(self, region_name):
+        if region_name is not None:
+            self.client_kwargs['bypass_url'] = get_endpoint_url_v3(self.catalog, 'compute', region_name)
+            log.debug('Using Nova bypass_url: %s', self.client_kwargs['bypass_url'])
+
+        self.compute_conn = client.Client(version=self.version, session=self.session, **self.client_kwargs)
+
+        volume_endpoints = get_entry(self.catalog, 'type', 'volume', raise_error=False).get('endpoints', {})
+        if volume_endpoints:
+            if region_name is not None:
+                self.client_kwargs['bypass_url'] = get_endpoint_url_v3(self.catalog, 'volume', region_name)
+                log.debug('Using Cinder bypass_url: %s', self.client_kwargs['bypass_url'])
+
+            self.volume_conn = client.Client(version=self.version, session=self.session, **self.client_kwargs)
+            if hasattr(self, 'extensions'):
+                self.expand_extensions()
+        else:
+            self.volume_conn = None
+
+    def _v2_setup(self, region_name):
         if region_name is not None:
             servers_endpoints = get_entry(self.catalog, 'type', 'compute')['endpoints']
             self.kwargs['bypass_url'] = get_entry(
@@ -346,16 +522,16 @@ class SaltNova(object):
                 return self.server_show_libcloud(self.uuid)
             except Exception as exc:
                 log.debug(
-                    'Server information not yet available: {0}'.format(exc)
+                    'Server information not yet available: %s', exc
                 )
                 time.sleep(1)
                 if time.time() - start > timeout:
-                    log.error('Timed out after {0} seconds '
-                              'while waiting for data'.format(timeout))
+                    log.error('Timed out after %s seconds '
+                              'while waiting for data', timeout)
                     return False
 
                 log.debug(
-                    'Retrying server_show() (try {0})'.format(trycount)
+                    'Retrying server_show() (try %s)', trycount
                 )
 
     def show_instance(self, name):
@@ -493,15 +669,15 @@ class SaltNova(object):
                 if response['status'] == 'available':
                     return response
             except Exception as exc:
-                log.debug('Volume is detaching: {0}'.format(name))
+                log.debug('Volume is detaching: %s', name)
                 time.sleep(1)
                 if time.time() - start > timeout:
-                    log.error('Timed out after {0} seconds '
-                              'while waiting for data'.format(timeout))
+                    log.error('Timed out after %d seconds '
+                              'while waiting for data', timeout)
                     return False
 
                 log.debug(
-                    'Retrying volume_show() (try {0})'.format(trycount)
+                    'Retrying volume_show() (try %d)', trycount
                 )
 
     def volume_attach(self,
@@ -531,15 +707,15 @@ class SaltNova(object):
                 if response['status'] == 'in-use':
                     return response
             except Exception as exc:
-                log.debug('Volume is attaching: {0}'.format(name))
+                log.debug('Volume is attaching: %s', name)
                 time.sleep(1)
                 if time.time() - start > timeout:
-                    log.error('Timed out after {0} seconds '
-                              'while waiting for data'.format(timeout))
+                    log.error('Timed out after %s seconds '
+                              'while waiting for data', timeout)
                     return False
 
                 log.debug(
-                    'Retrying volume_show() (try {0})'.format(trycount)
+                    'Retrying volume_show() (try %s)', trycount
                 )
 
     def suspend(self, instance_id):
@@ -574,13 +750,13 @@ class SaltNova(object):
         response = nt_ks.servers.delete(instance_id)
         return True
 
-    def flavor_list(self):
+    def flavor_list(self, **kwargs):
         '''
         Return a list of available flavors (nova flavor-list)
         '''
         nt_ks = self.compute_conn
         ret = {}
-        for flavor in nt_ks.flavors.list():
+        for flavor in nt_ks.flavors.list(**kwargs):
             links = {}
             for link in flavor.links:
                 links[link['rel']] = link['href']
@@ -604,19 +780,21 @@ class SaltNova(object):
                       flavor_id=0,      # pylint: disable=C0103
                       ram=0,
                       disk=0,
-                      vcpus=1):
+                      vcpus=1,
+                      is_public=True):
         '''
         Create a flavor
         '''
         nt_ks = self.compute_conn
         nt_ks.flavors.create(
-            name=name, flavorid=flavor_id, ram=ram, disk=disk, vcpus=vcpus
+            name=name, flavorid=flavor_id, ram=ram, disk=disk, vcpus=vcpus, is_public=is_public
         )
         return {'name': name,
                 'id': flavor_id,
                 'ram': ram,
                 'disk': disk,
-                'vcpus': vcpus}
+                'vcpus': vcpus,
+                'is_public': is_public}
 
     def flavor_delete(self, flavor_id):  # pylint: disable=C0103
         '''
@@ -625,6 +803,40 @@ class SaltNova(object):
         nt_ks = self.compute_conn
         nt_ks.flavors.delete(flavor_id)
         return 'Flavor deleted: {0}'.format(flavor_id)
+
+    def flavor_access_list(self, **kwargs):
+        '''
+        Return a list of project IDs assigned to flavor ID
+        '''
+        flavor_id = kwargs.get('flavor_id')
+        nt_ks = self.compute_conn
+        ret = {flavor_id: []}
+        flavor_accesses = nt_ks.flavor_access.list(flavor=flavor_id, **kwargs)
+        for project in flavor_accesses:
+            ret[flavor_id].append(project.tenant_id)
+        return ret
+
+    def flavor_access_add(self, flavor_id, project_id):
+        '''
+        Add a project to the flavor access list
+        '''
+        nt_ks = self.compute_conn
+        ret = {flavor_id: []}
+        flavor_accesses = nt_ks.flavor_access.add_tenant_access(flavor_id, project_id)
+        for project in flavor_accesses:
+            ret[flavor_id].append(project.tenant_id)
+        return ret
+
+    def flavor_access_remove(self, flavor_id, project_id):
+        '''
+        Remove a project from the flavor access list
+        '''
+        nt_ks = self.compute_conn
+        ret = {flavor_id: []}
+        flavor_accesses = nt_ks.flavor_access.remove_tenant_access(flavor_id, project_id)
+        for project in flavor_accesses:
+            ret[flavor_id].append(project.tenant_id)
+        return ret
 
     def keypair_list(self):
         '''
@@ -646,8 +858,8 @@ class SaltNova(object):
         '''
         nt_ks = self.compute_conn
         if pubfile:
-            ifile = salt.utils.fopen(pubfile, 'r')
-            pubkey = ifile.read()
+            with salt.utils.files.fopen(pubfile, 'r') as fp_:
+                pubkey = salt.utils.stringutils.to_unicode(fp_.read())
         if not pubkey:
             return False
         nt_ks.keypairs.create(name, public_key=pubkey)
@@ -776,6 +988,22 @@ class SaltNova(object):
                 pass
         return ret
 
+    def server_list_min(self):
+        '''
+        List minimal information about servers
+        '''
+        nt_ks = self.compute_conn
+        ret = {}
+        for item in nt_ks.servers.list(detailed=False):
+            try:
+                ret[item.name] = {
+                    'id': item.id,
+                    'state': 'Running'
+                }
+            except TypeError:
+                pass
+        return ret
+
     def server_list_detailed(self):
         '''
         Detailed list of servers
@@ -848,7 +1076,7 @@ class SaltNova(object):
         except AttributeError:
             raise SaltCloudSystemExit('Corrupt server in server_list_detailed. Remove corrupt servers.')
         for server_name, server in six.iteritems(servers):
-            if str(server['id']) == server_id:
+            if six.text_type(server['id']) == server_id:
                 ret[server_name] = server
         return ret
 
@@ -1017,7 +1245,14 @@ class SaltNova(object):
         floating_ips = nt_ks.floating_ips.list()
         for floating_ip in floating_ips:
             if floating_ip.ip == ip:
-                return floating_ip
+                response = {
+                    'ip': floating_ip.ip,
+                    'fixed_ip': floating_ip.fixed_ip,
+                    'id': floating_ip.id,
+                    'instance_id': floating_ip.instance_id,
+                    'pool': floating_ip.pool
+                }
+                return response
         return {}
 
     def floating_ip_create(self, pool=None):

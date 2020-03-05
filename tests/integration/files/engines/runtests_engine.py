@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 '''
-    :codeauthor: :email:`Pedro Algarvio (pedro@algarvio.me)`
-    :copyright: © 2015 by the SaltStack Team, see AUTHORS for more details.
+    :codeauthor: Pedro Algarvio (pedro@algarvio.me)
+    :copyright: Copyright 2015 by the SaltStack Team, see AUTHORS for more details.
     :license: Apache 2.0, see LICENSE for more details.
 
 
@@ -13,17 +13,22 @@
 '''
 
 # Import python libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
+import os
+import sys
+import errno
 import socket
 import logging
 
 # Import salt libs
 import salt.utils.event
+import salt.utils.asynchronous
 
 # Import 3rd-party libs
 from tornado import gen
 from tornado import ioloop
 from tornado import netutil
+from tornado import iostream
 
 log = logging.getLogger(__name__)
 
@@ -35,27 +40,27 @@ def __virtual__():
 
 
 def start():
-    # Create our own IOLoop, we're in another process
-    io_loop = ioloop.IOLoop()
-    io_loop.make_current()
-    pytest_engine = PyTestEngine(__opts__, io_loop)  # pylint: disable=undefined-variable
-    io_loop.add_callback(pytest_engine.start)
-    io_loop.start()
+    pytest_engine = PyTestEngine(__opts__)  # pylint: disable=undefined-variable
+    pytest_engine.start()
 
 
 class PyTestEngine(object):
-    def __init__(self, opts, io_loop):
+    def __init__(self, opts):
         self.opts = opts
-        self.io_loop = io_loop
         self.sock = None
+        self.stop_sending_events_file = opts.get('pytest_stop_sending_events_file')
+
+    def start(self):
+        self.io_loop = ioloop.IOLoop()
+        self.io_loop.make_current()
+        self.io_loop.add_callback(self._start)
+        self.io_loop.start()
 
     @gen.coroutine
-    def start(self):
-        if self.opts['__role'] == 'minion':
-            yield self.listen_to_minion_connected_event()
-
+    def _start(self):
         port = int(self.opts['runtests_conn_check_port'])
-        log.info('Starting Pytest Engine(role=%s) on port %s', self.opts['__role'], port)
+        log.warning('Starting Pytest Engine(role=%s, id=%s) on port %s', self.opts['__role'], self.opts['id'], port)
+
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.setblocking(0)
@@ -63,29 +68,49 @@ class PyTestEngine(object):
         self.sock.bind(('localhost', port))
         # become a server socket
         self.sock.listen(5)
-        netutil.add_accept_handler(
-            self.sock,
-            self.handle_connection,
-            io_loop=self.io_loop,
-        )
+        with salt.utils.asynchronous.current_ioloop(self.io_loop):
+            netutil.add_accept_handler(
+                self.sock,
+                self.handle_connection,
+            )
+
+        if self.opts['__role'] == 'master':
+            yield self.fire_master_started_event()
 
     def handle_connection(self, connection, address):
         log.warning('Accepted connection from %s. Role: %s', address, self.opts['__role'])
         # We just need to know that the daemon running the engine is alive...
-        connection.shutdown(socket.SHUT_RDWR)  # pylint: disable=no-member
-        connection.close()
+        try:
+            connection.shutdown(socket.SHUT_RDWR)  # pylint: disable=no-member
+            connection.close()
+        except socket.error as exc:
+            if not sys.platform.startswith('darwin'):
+                raise
+            try:
+                if exc.errno != errno.ENOTCONN:
+                    raise
+            except AttributeError:
+                # This is not macOS !?
+                pass
 
     @gen.coroutine
-    def listen_to_minion_connected_event(self):
-        log.info('Listening for minion connected event...')
-        minion_start_event_match = 'salt/minion/{0}/start'.format(self.opts['id'])
-        event_bus = salt.utils.event.get_master_event(self.opts,
-                                                      self.opts['sock_dir'],
-                                                      listen=True)
-        event_bus.subscribe(minion_start_event_match)
+    def fire_master_started_event(self):
+        log.info('Firing salt-%s started event...', self.opts['__role'])
+        event_bus = salt.utils.event.get_master_event(self.opts, self.opts['sock_dir'], listen=False)
+        start_event_tag = 'salt/{}/{}/start'.format(self.opts['__role'], self.opts['id'])
+        log.info('Firing salt-%s started event. Tag: %s', self.opts['__role'], start_event_tag)
+        load = {'id': self.opts['id'], 'tag': start_event_tag, 'data': {}}
+        # One minute should be more than enough to fire these events every second in order
+        # for pytest-salt to pickup that the master is running
+        timeout = 30
         while True:
-            event = event_bus.get_event(full=True, no_block=True)
-            if event is not None and event['tag'] == minion_start_event_match:
-                log.info('Got minion connected event: %s', event)
+            if self.stop_sending_events_file and not os.path.exists(self.stop_sending_events_file):
                 break
-            yield gen.sleep(0.25)
+            timeout -= 1
+            try:
+                event_bus.fire_event(load, start_event_tag, timeout=500)
+                if timeout <= 0:
+                    break
+                yield gen.sleep(1)
+            except iostream.StreamClosedError:
+                break

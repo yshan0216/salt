@@ -6,6 +6,9 @@ Control Apache Traffic Server
 .. versionadded:: 2015.8.0
 '''
 
+# Import Python libs
+from __future__ import absolute_import, unicode_literals, print_function
+
 
 def __virtual__():
     '''
@@ -231,30 +234,6 @@ def config(name, value):
     ret['result'] = True
     ret['comment'] = 'Configured {0} to {1}'.format(name, value)
     return ret
-
-
-def set_var(name, value):
-    '''
-    Set Traffic Server configuration variable values.
-
-    .. deprecated:: Oxygen
-        Use ``trafficserver.config`` instead.
-
-    .. code-block:: yaml
-
-        proxy.config.proxy_name:
-          trafficserver.set_var:
-            - value: cdn.site.domain.tld
-
-        OR
-
-        traffic_server_setting:
-          trafficserver.set_var:
-            - name: proxy.config.proxy_name
-            - value: cdn.site.domain.tld
-
-    '''
-    return config(name, value)
 
 
 def shutdown(name):

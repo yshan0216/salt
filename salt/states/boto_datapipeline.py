@@ -48,12 +48,17 @@ config:
       - parameter_values:
           myDDBTableName: my-dynamo-table
 '''
-from __future__ import absolute_import
 
+# Import Python libs
+from __future__ import absolute_import, print_function, unicode_literals
 import copy
 import datetime
 import difflib
-import json
+
+# Import Salt lobs
+import salt.utils.data
+import salt.utils.json
+from salt.ext import six
 from salt.ext.six.moves import zip
 
 
@@ -318,11 +323,11 @@ def _pipeline_present_with_definition(name, expected_pipeline_objects,
 
     pipeline_objects = pipeline_definition.get('pipelineObjects')
     parameter_objects = pipeline_definition.get('parameterObjects')
-    paramater_values = pipeline_definition.get('parameterValues')
+    parameter_values = pipeline_definition.get('parameterValues')
 
     present = (_recursive_compare(_cleaned(pipeline_objects), _cleaned(expected_pipeline_objects)) and
                _recursive_compare(parameter_objects, expected_parameter_objects) and
-               _recursive_compare(paramater_values, expected_parameter_values))
+               _recursive_compare(parameter_values, expected_parameter_values))
     return present, pipeline_definition
 
 
@@ -394,11 +399,11 @@ def _diff(old_pipeline_definition, new_pipeline_definition):
     old_pipeline_definition.pop('ResponseMetadata', None)
     new_pipeline_definition.pop('ResponseMetadata', None)
 
-    diff = difflib.unified_diff(
-        json.dumps(old_pipeline_definition, indent=4).splitlines(1),
-        json.dumps(new_pipeline_definition, indent=4).splitlines(1),
-    )
-    return ''.join(diff)
+    diff = salt.utils.data.decode(difflib.unified_diff(
+        salt.utils.json.dumps(old_pipeline_definition, indent=4).splitlines(True),
+        salt.utils.json.dumps(new_pipeline_definition, indent=4).splitlines(True),
+    ))
+    return ''.join(diff)  # future lint: disable=blacklisted-function
 
 
 def _standardize(structure):
@@ -416,7 +421,7 @@ def _standardize(structure):
                 mutating_helper(each)
         elif isinstance(structure, dict):
             structure = dict(structure)
-            for k, v in structure.iteritems():
+            for k, v in six.iteritems(structure):
                 mutating_helper(k)
                 mutating_helper(v)
 
@@ -484,7 +489,7 @@ def _dict_to_list_ids(objects):
     while still satisfying the boto api.
     '''
     list_with_ids = []
-    for key, value in objects.iteritems():
+    for key, value in six.iteritems(objects):
         element = {'id': key}
         element.update(value)
         list_with_ids.append(element)
@@ -518,7 +523,7 @@ def _properties_from_dict(d, key_name='key'):
         ]
     '''
     fields = []
-    for key, value in d.iteritems():
+    for key, value in six.iteritems(d):
         if isinstance(value, dict):
             fields.append({
                 key_name: key,

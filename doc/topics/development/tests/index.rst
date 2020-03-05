@@ -32,6 +32,46 @@ or the integration testing factions contain respective integration or unit
 test files for Salt execution modules.
 
 
+.. note::
+    Salt's test framework provides for the option to only run tests which
+    correspond to a given file (or set of files), via the ``--from-filenames``
+    argument to ``runtests.py``:
+
+    .. code-block:: bash
+
+        python /path/to/runtests.py --from-filenames=salt/modules/foo.py
+
+    Therefore, where possible, test files should be named to match the source
+    files they are testing. For example, when writing tests for
+    ``salt/modules/foo.py``, unit tests should go into
+    ``tests/unit/modules/test_foo.py``, and integration tests should go into
+    ``tests/integration/modules/test_foo.py``.
+
+    However, integration tests are organized differently from unit tests, and
+    this may not always be plausible. In these cases, to ensure that the proper
+    tests are run for these files, they must be mapped in
+    `tests/filename_map.yml`__.
+
+    The filename map is used to supplement the test framework's filename
+    matching logic. This allows one to ensure that states correspnding to an
+    execution module are also tested when ``--from-filenames`` includes that
+    execution module. It can also be used for those cases where the path to a
+    test file doesn't correspond directly to the file which is being tested
+    (e.g. the ``shell``, ``spm``, and ``ssh`` integration tests, among others).
+    Both glob expressions and regular expressions are permitted in the filename
+    map.
+
+
+    .. important::
+        Test modules which don't map directly to the source file they are
+        testing (using the naming convention described above), **must** be
+        added to the ``ignore`` tuple in ``tests/unit/test_module_names.py``,
+        in the ``test_module_name_source_match`` function. This unit test
+        ensures that we maintain the naming convention for test files.
+
+    .. __: https://github.com/saltstack/salt/blob/develop/tests/filename_map.yml
+
+
 Integration Tests
 -----------------
 
@@ -85,26 +125,33 @@ the lines below, depending on the relevant Python version:
 
 .. code-block:: bash
 
-    pip install -r requirements/dev_python26.txt
     pip install -r requirements/dev_python27.txt
+    pip install -r requirements/dev_python34.txt
 
-.. note::
+To be able to run integration tests which utilizes ZeroMQ transport, you also
+need to install additional requirements for it. Make sure you have installed
+the C/C++ compiler and development libraries and header files needed for your
+Python version.
 
-    In Salt 0.17, testing libraries were migrated into their own repo. To install them:
+This is an example for RedHat-based operating systems:
 
-    .. code-block:: bash
+.. code-block:: bash
 
-        pip install git+https://github.com/saltstack/salt-testing.git#egg=SaltTesting
+    yum install gcc gcc-c++ python-devel
+    pip install -r requirements/zeromq.txt
 
+On Debian, Ubuntu or their derivatives run the following commands:
 
-    Failure to install SaltTesting will result in import errors similar to the following:
+.. code-block:: bash
 
-    .. code-block:: bash
+    apt-get install build-essential python-dev
+    pip install -r requirements/zeromq.txt
 
-        ImportError: No module named salttesting
+This will install the latest ``pycrypto`` and ``pyzmq`` (with bundled
+``libzmq``) Python modules required for running integration tests suite.
 
-Once all requirements are installed, use ``tests/runtests.py`` to
-run all of the tests included in Salt's test suite:
+Once all requirements are installed, use ``runtests.py`` script to run all of
+the tests included in Salt's test suite:
 
 .. code-block:: bash
 
@@ -132,13 +179,13 @@ Running Test Subsections
 Instead of running the entire test suite all at once, which can take a long time,
 there are several ways to run only specific groups of tests or individual tests:
 
-* Run unit tests only: ``./tests/runtests.py --unit-tests``
-* Run unit and integration tests for states: ``./tests/runtests.py --state``
-* Run integration tests for an individual module: ``./tests/runtests.py -n integration.modules.virt``
-* Run unit tests for an individual module: ``./tests/runtests.py -n unit.modules.virt_test``
+* Run :ref:`unit tests only<running-unit-tests-no-daemons>`: ``python tests/runtests.py --unit-tests``
+* Run unit and integration tests for states: ``python tests/runtests.py --state``
+* Run integration tests for an individual module: ``python tests/runtests.py -n integration.modules.virt``
+* Run unit tests for an individual module: ``python tests/runtests.py -n unit.modules.virt_test``
 * Run an individual test by using the class and test name (this example is for the
   ``test_default_kvm_profile`` test in the ``integration.module.virt``):
-  ``./tests/runtests.py -n integration.module.virt.VirtTest.test_default_kvm_profile``
+  ``python tests/runtests.py -n integration.module.virt.VirtTest.test_default_kvm_profile``
 
 For more specific examples of how to run various test subsections or individual
 tests, please see the :ref:`Test Selection Options <test-selection-options>`
@@ -156,14 +203,14 @@ Since the unit tests do not require a master or minion to execute, it is often u
 run unit tests individually, or as a whole group, without having to start up the integration testing
 daemons. Starting up the master, minion, and syndic daemons takes a lot of time before the tests can
 even start running and is unnecessary to run unit tests. To run unit tests without invoking the
-integration test daemons, simple remove the ``/tests`` portion of the ``runtests.py`` command:
+integration test daemons, simply run the ``runtests.py`` script with ``--unit`` argument:
 
 .. code-block:: bash
 
-    ./runtests.py --unit
+    python tests/runtests.py --unit
 
-All of the other options to run individual tests, entire classes of tests, or entire test modules still
-apply.
+All of the other options to run individual tests, entire classes of tests, or
+entire test modules still apply.
 
 
 Running Destructive Integration Tests
@@ -184,13 +231,14 @@ successfully. Therefore, running destructive tests should be done with caution.
 
 .. note::
 
-    Running destructive tests will change the underlying system. Use caution when running destructive tests.
+    Running destructive tests will change the underlying system.
+    Use caution when running destructive tests.
 
 To run tests marked as destructive, set the ``--run-destructive`` flag:
 
 .. code-block:: bash
 
-    ./tests/runtests.py --run-destructive
+    python tests/runtests.py --run-destructive
 
 
 Running Cloud Provider Tests
@@ -211,7 +259,7 @@ the default cloud provider configuration file for DigitalOcean looks like this:
 .. code-block:: yaml
 
     digitalocean-config:
-      driver: digital_ocean
+      driver: digitalocean
       client_key: ''
       api_key: ''
       location: New York 1
@@ -222,7 +270,7 @@ must be provided:
 .. code-block:: yaml
 
     digitalocean-config:
-      driver: digital_ocean
+      driver: digitalocean
       client_key: wFGEwgregeqw3435gDger
       api_key: GDE43t43REGTrkilg43934t34qT43t4dgegerGEgg
       location: New York 1
@@ -252,13 +300,13 @@ Here's a simple usage example:
 
 .. code-block:: bash
 
-    tests/runtests.py --docked=ubuntu-12.04 -v
+    python tests/runtests.py --docked=ubuntu-12.04 -v
 
 The full `docker`_ container repository can also be provided:
 
 .. code-block:: bash
 
-    tests/runtests.py --docked=salttest/ubuntu-12.04 -v
+    python tests/runtests.py --docked=salttest/ubuntu-12.04 -v
 
 
 The SaltStack team is creating some containers which will have the necessary
@@ -415,3 +463,40 @@ question if the path forward is unclear.
     there may be new functionality in the file that is present in the new release branch
     that is untested.It would be wise to see if new functionality could use additional
     testing once the test file has propagated to newer release branches.
+
+
+Test Helpers
+------------
+
+Several Salt-specific helpers are available. A full list is available by inspecting
+functions exported in `tests.support.helpers`.
+
+`@expensiveTest` -- Designates a test which typically requires a relatively costly
+external resource, like a cloud virtual machine. This decorator is not normally
+used by developers outside of the Salt core team.
+
+`@destructiveTest` -- Marks a test as potentially destructive. It will not be run
+by the test runner unless the ``-run-destructive`` test is expressly passed.
+
+`@requires_network` -- Requires a network connection for the test to operate
+successfully. If a network connection is not detected, the test will not run.
+
+`@requires_salt_modules` -- Requires all the modules in a list of modules in
+order for the test to be executed. Otherwise, the test is skipped.
+
+`@requires_system_grains` -- Loads and passes the grains on the system as an
+keyword argument to the test function with the name `grains`.
+
+`@skip_if_binaries_missing(['list', 'of', 'binaries'])` -- If called from inside a test,
+the test will be skipped if the binaries are not all present on the system.
+
+`@skip_if_not_root` -- If the test is not executed as root, it will be skipped.
+
+`@with_system_user` -- Creates and optionally destroys a system user within a test case.
+See implementation details in `tests.support.helpers` for details.
+
+`@with_system_group` -- Creates and optionally destroys a system group within a test case.
+See implementation details in `tests.support.helpers` for details.
+
+`@with_system_user_and_group` -- Creates and optionally destroys a system user and group
+within a test case.  See implementation details in `tests.support.helpers` for details.

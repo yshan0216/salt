@@ -57,7 +57,11 @@ parameters are discussed in more detail below.
       id: 'use-instance-role-credentials'
       key: 'use-instance-role-credentials'
 
-      # Make sure this key is owned by root with permissions 0400.
+      # If 'role_arn' is specified the above credentials are used to
+      # to assume to the role. By default, role_arn is set to None.
+      role_arn: arn:aws:iam::012345678910:role/SomeRoleName
+
+      # Make sure this key is owned by corresponding user (default 'salt') with permissions 0400.
       #
       private_key: /etc/salt/my_test_key.pem
       keyname: my_test_key
@@ -78,6 +82,7 @@ parameters are discussed in more detail below.
       # RHEL         -> ec2-user
       # CentOS       -> ec2-user
       # Ubuntu       -> ubuntu
+      # Debian       -> admin
       #
       ssh_username: ec2-user
 
@@ -295,7 +300,7 @@ Set up an initial profile at ``/etc/salt/cloud.profiles``:
           SecurityGroupId:
             - sg-750af413
       del_root_vol_on_destroy: True
-      del_all_vol_on_destroy: True
+      del_all_vols_on_destroy: True
       volumes:
         - { size: 10, device: /dev/sdf }
         - { size: 10, device: /dev/sdg, type: io1, iops: 1000 }
@@ -323,7 +328,7 @@ it can be verified with Salt:
 
 .. code-block:: bash
 
-    # salt 'ami.example.com' test.ping
+    # salt 'ami.example.com' test.version
 
 
 Required Settings
@@ -354,6 +359,35 @@ functionality was added to Salt in the 2015.5.0 release.
       # Pass userdata to the instance to be created
       userdata_file: /etc/salt/my-userdata-file
 
+.. note::
+    From versions 2016.11.0 and 2016.11.3, this file was passed through the
+    master's :conf_master:`renderer` to template it. However, this caused
+    issues with non-YAML data, so templating is no longer performed by default.
+    To template the userdata_file, add a ``userdata_template`` option to the
+    cloud profile:
+
+    .. code-block:: yaml
+
+        my-ec2-config:
+          # Pass userdata to the instance to be created
+          userdata_file: /etc/salt/my-userdata-file
+          userdata_template: jinja
+
+    If no ``userdata_template`` is set in the cloud profile, then the master
+    configuration will be checked for a :conf_master:`userdata_template` value.
+    If this is not set, then no templating will be performed on the
+    userdata_file.
+
+    To disable templating in a cloud profile when a
+    :conf_master:`userdata_template` has been set in the master configuration
+    file, simply set ``userdata_template`` to ``False`` in the cloud profile:
+
+    .. code-block:: yaml
+
+        my-ec2-config:
+          # Pass userdata to the instance to be created
+          userdata_file: /etc/salt/my-userdata-file
+          userdata_template: False
 
 EC2 allows a location to be set for servers to be deployed in. Availability
 zones exist inside regions, and may be added to increase specificity.
@@ -415,6 +449,16 @@ Multiple security groups can also be specified in the same fashion:
         - default
         - extra
 
+EC2 instances can be added to an `AWS Placement Group`_ by specifying the
+``placementgroup`` option:
+
+.. code-block:: yaml
+
+    my-ec2-config:
+      placementgroup: my-aws-placement-group
+
+.. _`AWS Placement Group`: http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html
+
 Your instances may optionally make use of EC2 Spot Instances. The
 following example will request that spot instances be used and your
 maximum bid will be $0.10. Keep in mind that different spot prices
@@ -428,10 +472,23 @@ EC2 API or AWS Console.
       spot_config:
         spot_price: 0.10
 
+You can optionally specify tags to apply to the EC2 spot instance request.
+A spot instance request itself is an object in AWS. The following example
+will set two tags on the spot instance request.
+
+.. code-block:: yaml
+
+    my-ec2-config:
+      spot_config:
+        spot_price: 0.10
+        tag:
+          tag0: value
+          tag1: value
+
 By default, the spot instance type is set to 'one-time', meaning it will
 be launched and, if it's ever terminated for whatever reason, it will not
 be recreated. If you would like your spot instances to be relaunched after
-a termination (by your or AWS), set the ``type`` to 'persistent'.
+a termination (by you or AWS), set the ``type`` to 'persistent'.
 
 NOTE: Spot instances are a great way to save a bit of money, but you do
 run the risk of losing your spot instances if the current price for the
@@ -496,6 +553,53 @@ its size to 100G by using the following configuration.
           Ebs.VolumeType: gp2
           Ebs.VolumeSize: 3001
 
+Tagging of block devices can be set on a per device basis. For example, you may
+have multiple devices defined in your block_device_mappings structure. You have the
+option to set tags on any of one device or all of them as shown in the following
+configuration.
+
+.. code-block:: yaml
+
+    my-ec2-config:
+      block_device_mappings:
+        - DeviceName: /dev/sda
+          Ebs.VolumeSize: 100
+          Ebs.VolumeType: gp2
+          tag:
+            tag0: myserver
+            tag1: value
+        - DeviceName: /dev/sdb
+          Ebs.VolumeType: gp2
+          Ebs.VolumeSize: 3001
+          tag:
+            tagX: value
+            tagY: value
+
+You can configure any AWS valid tag name as shown in the above example, including
+'Name'. If you do not configure the tag 'Name', it will be automatically created
+with a value set to the virtual machine name. If you configure the tag 'Name', the
+value you configure will be used rather than defaulting to the virtual machine
+name as shown in the following configuration.
+
+.. code-block:: yaml
+
+    my-ec2-config:
+      block_device_mappings:
+        - DeviceName: /dev/sda
+          Ebs.VolumeSize: 100
+          Ebs.VolumeType: gp2
+          tag:
+            Name: myserver
+            tag0: value
+            tag1: value
+        - DeviceName: /dev/sdb
+          Ebs.VolumeType: gp2
+          Ebs.VolumeSize: 3001
+          tag:
+            Name: customvalue
+            tagX: value
+            tagY: value
+
 Existing EBS volumes may also be attached (not created) to your instances or
 you can create new EBS volumes based on EBS snapshots. To simply attach an
 existing volume use the ``volume_id`` parameter.
@@ -526,6 +630,31 @@ Tags can be set once an instance has been launched.
 .. _`AWS documentation`: http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/InstanceStorage.html
 .. _`AWS Spot Instances`: http://aws.amazon.com/ec2/purchasing-options/spot-instances/
 
+Setting up a Master inside EC2
+------------------------------
+
+Salt Cloud can configure Salt Masters as well as Minions. Use the ``make_master`` setting to use
+this functionality.
+
+.. code-block:: yaml
+
+    my-ec2-config:
+      # Optionally install a Salt Master in addition to the Salt Minion
+      make_master: True
+
+When creating a Salt Master inside EC2 with ``make_master: True``, or when the Salt Master is already
+located and configured inside EC2, by default, minions connect to the master's public IP address during
+Salt Cloud's provisioning process. Depending on how your security groups are defined, the minions
+may or may not be able to communicate with the master. In order to use the master's private IP in EC2
+instead of the public IP, set the ``salt_interface`` to ``private_ips``.
+
+.. code-block:: yaml
+
+    my-ec2-config:
+      # Optionally set the IP configuration to private_ips
+      salt_interface: private_ips
+
+
 Modify EC2 Tags
 ===============
 One of the features of EC2 is the ability to tag resources. In fact, under the
@@ -545,7 +674,7 @@ just instances:
 
     salt-cloud -f get_tags my_ec2 resource_id=af5467ba
     salt-cloud -f set_tags my_ec2 resource_id=af5467ba tag1=somestuff
-    salt-cloud -f del_tags my_ec2 resource_id=af5467ba tag1,tag2,tag3
+    salt-cloud -f del_tags my_ec2 resource_id=af5467ba tags=tag1,tag2,tag3
 
 
 Rename EC2 Instances
@@ -654,6 +783,28 @@ them have never been used, much less tested, by the Salt Stack team.
 * `All Images on Amazon`__
 
 .. __: https://aws.amazon.com/marketplace
+
+
+NOTE: If ``image`` of a profile does not start with ``ami-``, latest
+image with that name will be used. For example, to create a CentOS 7
+profile, instead of using the AMI like ``image: ami-1caef165``, we
+can use its name like ``image: 'CentOS Linux 7 x86_64 HVM EBS ENA 1803_01'``.
+We can also use a pattern like below to get the latest CentOS 7:
+
+
+.. code-block:: yaml
+
+    profile-id:
+      provider: provider-name
+      subnetid: subnet-XXXXXXXX
+      image: 'CentOS Linux 7 x86_64 HVM EBS *'
+      size: m1.medium
+      ssh_username: centos
+      securitygroupid:
+        - sg-XXXXXXXX
+      securitygroupname:
+        - AnotherSecurityGroup
+        - AndThirdSecurityGroup
 
 
 show_image
@@ -954,7 +1105,7 @@ so:-
         - AndThirdSecurityGroup
 
 Note that 'subnetid' takes precedence over 'subnetname', but 'securitygroupid'
-and 'securitygroupname' are merged toghether to generate a single list for
+and 'securitygroupname' are merged together to generate a single list for
 SecurityGroups of instances.
 
 Specifying interface properties
@@ -1012,6 +1163,12 @@ the network interfaces of your virtual machines, for example:-
           # Uncomment this if you're creating NAT instances. Allows an instance
           # to accept IP packets with destinations other than itself.
           # SourceDestCheck: False
+
+        - DeviceIndex: 1
+          subnetname: XXXXXXXX-Subnet
+          securitygroupname:
+            - XXXXXXXX-SecurityGroup
+            - YYYYYYYY-SecurityGroup
 
 Note that it is an error to assign a 'subnetid', 'subnetname', 'securitygroupid'
 or 'securitygroupname' to a profile where the interfaces are manually configured

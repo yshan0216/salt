@@ -4,15 +4,23 @@ Allow for flow based timers. These timers allow for a sleep to exist across
 multiple runs of the flow
 '''
 
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 import time
 
 
 def hold(name, seconds):
     '''
-    Wait for a given period of time, then fire a result of True, requireing
+    Wait for a given period of time, then fire a result of True, requiring
     this state allows for an action to be blocked for evaluation based on
     time
+
+    USAGE:
+
+    .. code-block:: yaml
+
+        hold_on_a_moment:
+          timer.hold:
+            - seconds: 30
     '''
     ret = {'name': name,
            'result': False,

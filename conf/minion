@@ -21,15 +21,19 @@
 #proxy_username:
 #proxy_password:
 
+# List of hosts to bypass HTTP proxy. This key does nothing unless proxy_host etc is
+# configured, it does not support any kind of wildcards.
+#no_proxy: []
+
 # If multiple masters are specified in the 'master' setting, the default behavior
-# is to always try to connect to them in the order they are listed. If random_master is
-# set to True, the order will be randomized instead. This can be helpful in distributing
-# the load of many minions executing salt-call requests, for example, from a cron job.
-# If only one master is listed, this setting is ignored and a warning will be logged.
-# NOTE: If master_type is set to failover, use master_shuffle instead.
+# is to always try to connect to them in the order they are listed. If random_master
+# is set to True, the order will be randomized upon Minion startup instead. This can
+# be helpful in distributing the load of many minions executing salt-call requests,
+# for example, from a cron job. If only one master is listed, this setting is ignored
+# and a warning will be logged.
 #random_master: False
 
-# Use if master_type is set to failover.
+# NOTE: Deprecated in Salt 2019.2.0. Use 'random_master' instead.
 #master_shuffle: False
 
 # Minions can connect to multiple masters simultaneously (all masters
@@ -65,6 +69,11 @@
 # the master hostname if name resolution fails. Defaults to 30 seconds.
 # Set to zero if the minion should shutdown and not retry.
 # retry_dns: 30
+
+# Set the number of times to attempt to resolve
+# the master hostname if name resolution fails. Defaults to None,
+# which will attempt the resolution indefinitely.
+# retry_dns_count: 3
 
 # Set the port used by the master reply and authentication server.
 #master_port: 4506
@@ -129,6 +138,13 @@
 # This data may contain sensitive data and should be protected accordingly.
 #cachedir: /var/cache/salt/minion
 
+# Append minion_id to these directories.  Helps with
+# multiple proxies and minions running on the same machine.
+# Allowed elements in the list: pki_dir, cachedir, extension_modules
+# Normally not needed unless running several proxies and/or minions on the same machine
+# Defaults to ['cachedir'] for proxies, [] (empty list) for regular minions
+#append_minionid_config_dirs:
+
 # Verify and set permissions on configuration directories at startup.
 #verify_env: True
 
@@ -141,10 +157,19 @@
 # Set the directory used to hold unix sockets.
 #sock_dir: /var/run/salt/minion
 
+# The minion can take a while to start up when lspci and/or dmidecode is used
+# to populate the grains for the minion. Set this to False if you do not need
+# GPU hardware grains for your minion.
+# enable_gpu_grains: True
+
 # Set the default outputter used by the salt-call command. The default is
 # "nested".
 #output: nested
-#
+
+# To set a list of additional directories to search for salt outputters, set the
+# outputter_dirs option.
+#outputter_dirs: []
+
 # By default output is colored. To disable colored output, set the color value
 # to False.
 #color: True
@@ -154,7 +179,7 @@
 # strip_colors: False
 
 # Backup files that are replaced by file.managed and file.recurse under
-# 'cachedir'/file_backups relative to their original location and appended
+# 'cachedir'/file_backup relative to their original location and appended
 # with a timestamp. The only valid setting is "minion". Disabled by default.
 #
 # Alternatively this can be specified for each file in state files:
@@ -185,6 +210,15 @@
 # have a minion wait for a random amount of time, use this optional parameter.
 # The wait-time will be a random number of seconds between 0 and the defined value.
 #random_reauth_delay: 60
+
+
+# To avoid overloading a master when many minions startup at once, a randomized
+# delay may be set to tell the minions to wait before connecting to the master.
+# This value is the number of seconds to choose from for a random number. For
+# example, setting this value to 60 will choose a random number of seconds to delay
+# on startup between zero seconds and sixty seconds. Setting to '0' will disable
+# this feature.
+#random_startup_delay: 0
 
 # When waiting for a master to accept the minion's public key, salt will
 # continuously attempt to reconnect until successful. This is the timeout value,
@@ -221,7 +255,7 @@
 # To auto recover minions if master changes IP address (DDNS)
 #    auth_tries: 10
 #    auth_safemode: False
-#    ping_interval: 90
+#    ping_interval: 2
 #
 # Minions won't know master is missing until a ping fails. After the ping fail,
 # the minion will attempt authentication and likely fails out and cause a restart.
@@ -353,11 +387,14 @@
 #    interface: eth0
 #    cidr: '10.0.0.0/8'
 
+# The number of minutes between mine updates.
+#mine_interval: 60
+
 # Windows platforms lack posix IPC and must rely on slower TCP based inter-
 # process communications. Set ipc_mode to 'tcp' on such systems
 #ipc_mode: ipc
 
-# Overwrite the default tcp ports used by the minion when in tcp mode
+# Overwrite the default tcp ports used by the minion when ipc_mode is set to 'tcp'
 #tcp_pub_port: 4510
 #tcp_pull_port: 4511
 
@@ -365,6 +402,16 @@
 # memory. This value tunes the maximum size of a message allowed onto the
 # minion event bus. The value is expressed in bytes.
 #max_event_size: 1048576
+
+# When a minion starts up it sends a notification on the event bus with a tag
+# that looks like this: `salt/minion/<minion_id>/start`. For historical reasons
+# the minion also sends a similar event with an event tag like this:
+# `minion_start`. This duplication can cause a lot of clutter on the event bus
+# when there are many minions. Set `enable_legacy_startup_events: False` in the
+# minion config to ensure only the `salt/minion/<minion_id>/start` events are
+# sent. Beginning with the `Sodium` Salt release this option will default to
+# `False`
+#enable_legacy_startup_events: True
 
 # To detect failed master(s) and fire events on connect/disconnect, set
 # master_alive_interval to the number of seconds to poll the masters for
@@ -386,16 +433,33 @@
 #include:
 #  - /etc/salt/extra_config
 #  - /etc/roles/webserver
+
+# The syndic minion can verify that it is talking to the correct master via the
+# key fingerprint of the higher-level master with the "syndic_finger" config.
+#syndic_finger: ''
 #
 #
 #
 #####   Minion module management     #####
 ##########################################
 # Disable specific modules. This allows the admin to limit the level of
-# access the master has to the minion.
-#disable_modules: [cmdmod,test]
+# access the master has to the minion.  The default here is the empty list,
+# below is an example of how this needs to be formatted in the config file
+#disable_modules:
+#  - cmdmod
+#  - test
 #disable_returners: []
-#
+
+# This is the reverse of disable_modules.  The default, like disable_modules, is the empty list,
+# but if this option is set to *anything* then *only* those modules will load.
+# Note that this is a very large hammer and it can be quite difficult to keep the minion working
+# the way you think it should since Salt uses many modules internally itself.  At a bare minimum
+# you need the following enabled or else the minion won't start.
+#whitelist_modules:
+#  - cmdmod
+#  - test
+#  - config
+
 # Modules can be loaded from arbitrary paths. This enables the easy deployment
 # of third party modules. Modules for returners and minions can be loaded.
 # Specify a list of extra directories to search for minion modules and
@@ -423,19 +487,18 @@
 
 #####    State Management Settings    #####
 ###########################################
-# The state management system executes all of the state templates on the minion
-# to enable more granular control of system state management. The type of
-# template and serialization used for state management needs to be configured
-# on the minion, the default renderer is yaml_jinja. This is a yaml file
-# rendered from a jinja template, the available options are:
-# yaml_jinja
-# yaml_mako
-# yaml_wempy
-# json_jinja
-# json_mako
-# json_wempy
+# The default renderer to use in SLS files. This is configured as a
+# pipe-delimited expression. For example, jinja|yaml will first run jinja
+# templating on the SLS file, and then load the result as YAML. This syntax is
+# documented in further depth at the following URL:
 #
-#renderer: yaml_jinja
+# https://docs.saltstack.com/en/latest/ref/renderers/#composing-renderers
+#
+# NOTE: The "shebang" prefix (e.g. "#!jinja|yaml") described in the
+# documentation linked above is for use in an SLS file to override the default
+# renderer, it should not be used when configuring the renderer here.
+#
+#renderer: jinja|yaml
 #
 # The failhard option tells the minions to stop immediately after the first
 # failure detected in the state execution. Defaults to False.
@@ -459,6 +522,16 @@
 # Isolates the pillar environment on the minion side. This functions the same
 # as the environment setting, but for pillar instead of states.
 #pillarenv: None
+#
+# Set this option to True to force the pillarenv to be the same as the
+# effective saltenv when running states. Note that if pillarenv is specified,
+# this option will be ignored.
+#pillarenv_from_saltenv: False
+#
+# Set this option to 'True' to force a 'KeyError' to be raised whenever an
+# attempt to retrieve a named value from pillar fails. When this option is set
+# to 'False', the failed attempt returns an empty string. Default is 'False'.
+#pillar_raise_on_missing: False
 #
 # If using the local file directory, then the state top file name needs to be
 # defined, by default this is top.sls.
@@ -486,6 +559,15 @@
 #   - pkg
 #
 #state_aggregate: False
+
+# Disable requisites during state runs by specifying a single requisite
+# or a list of requisites to disable.
+#
+# disabled_requisites: require_in
+#
+# disabled_requisites:
+#     - require
+#     - require_in
 
 #####     File Directory Settings    #####
 ##########################################
@@ -540,14 +622,11 @@
 #fileserver_limit_traversal: False
 
 # The hash_type is the hash to use when discovering the hash of a file on
-# the local fileserver. The default is md5, but sha1, sha224, sha256, sha384
+# the local fileserver. The default is sha256, but md5, sha1, sha224, sha384
 # and sha512 are also supported.
 #
-# WARNING: While md5 and sha1 are also supported, do not use it due to the high chance
-# of possible collisions and thus security breach.
-#
-# WARNING: While md5 is also supported, do not use it due to the high chance
-# of possible collisions and thus security breach.
+# WARNING: While md5 and sha1 are also supported, do not use them due to the
+# high chance of possible collisions and thus security breach.
 #
 # Warning: Prior to changing this value, the minion should be stopped and all
 # Salt caches should be cleared.
@@ -573,6 +652,9 @@
 # you do so at your own risk!
 #open_mode: False
 
+# The size of key that should be generated when creating new keys.
+#keysize: 2048
+
 # Enable permissive access to the salt keys.  This allows you to run the
 # master or minion as root, but have a non-root group be given access to
 # your pki_dir.  To make the access explicit, root must belong to the group
@@ -585,9 +667,12 @@
 # all data that has a result of True and no changes will be suppressed.
 #state_verbose: True
 
-# The state_output setting changes if the output is the full multi line
-# output for each changed state if set to 'full', but if set to 'terse'
-# the output will be shortened to a single line.
+# The state_output setting controls which results will be output full multi line
+# full, terse - each state will be full/terse
+# mixed - only states with errors will be full
+# changes - states with changes and errors will be full
+# full_id, mixed_id, changes_id and terse_id are also allowed;
+# when set, the state ID will be used as name in the output
 #state_output: full
 
 # The state_output_diff setting changes whether or not the output from
@@ -601,16 +686,59 @@
 
 # Fingerprint of the master public key to validate the identity of your Salt master
 # before the initial key exchange. The master fingerprint can be found by running
-# "salt-key -F master" on the Salt master.
+# "salt-key -f master.pub" on the Salt master.
 #master_finger: ''
+
+# Use TLS/SSL encrypted connection between master and minion.
+# Can be set to a dictionary containing keyword arguments corresponding to Python's
+# 'ssl.wrap_socket' method.
+# Default is None.
+#ssl:
+#    keyfile: <path_to_keyfile>
+#    certfile: <path_to_certfile>
+#    ssl_version: PROTOCOL_TLSv1_2
+
+# Grains to be sent to the master on authentication to check if the minion's key
+# will be accepted automatically. Needs to be configured on the master.
+#autosign_grains:
+#  - uuid
+#  - server_id
+
+
+######        Reactor Settings        #####
+###########################################
+# Define a salt reactor. See https://docs.saltstack.com/en/latest/topics/reactor/
+#reactor: []
+
+#Set the TTL for the cache of the reactor configuration.
+#reactor_refresh_interval: 60
+
+#Configure the number of workers for the runner/wheel in the reactor.
+#reactor_worker_threads: 10
+
+#Define the queue size for workers in the reactor.
+#reactor_worker_hwm: 10000
 
 
 ######         Thread settings        #####
 ###########################################
 # Disable multiprocessing support, by default when a minion receives a
 # publication a new process is spawned and the command is executed therein.
+#
+# WARNING: Disabling multiprocessing may result in substantial slowdowns
+# when processing large pillars. See https://github.com/saltstack/salt/issues/38758
+# for a full explanation.
 #multiprocessing: True
 
+# Limit the maximum amount of processes or threads created by salt-minion.
+# This is useful to avoid resource exhaustion in case the minion receives more
+# publications than it is able to handle, as it limits the number of spawned
+# processes or threads. -1 is the default and disables the limit.
+#process_count_max: -1
+
+# If the process_count_max limit is reached, wait for this long in a coroutine before
+# attempting to launch the process for the next publication.
+#process_count_max_sleep_secs: 10
 
 #####         Logging settings       #####
 ##########################################
@@ -627,7 +755,7 @@
 #key_logfile: /var/log/salt/key
 
 # The level of messages to send to the console.
-# One of 'garbage', 'trace', 'debug', info', 'warning', 'error', 'critical'.
+# One of 'garbage', 'trace', 'debug', 'info', 'warning', 'error', 'critical'.
 #
 # The following log levels are considered INSECURE and may log sensitive data:
 # ['garbage', 'trace', 'debug']
@@ -692,6 +820,10 @@
 # ZeroMQ is installed.
 #
 #zmq_monitor: False
+
+# Number of times to try to authenticate with the salt master when reconnecting
+# to the master
+#tcp_authentication_retries: 5
 
 ######      Module configuration      #####
 ###########################################
@@ -763,8 +895,16 @@
 
 ######      Returner  settings        ######
 ############################################
-# Which returner(s) will be used for minion's result:
+# Default Minion returners. Can be a comma delimited string or a list:
+#
 #return: mysql
+#
+#return: mysql,slack,redis
+#
+#return:
+#  - mysql
+#  - hipchat
+#  - slack
 
 
 ######    Miscellaneous  settings     ######

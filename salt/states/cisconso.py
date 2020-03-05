@@ -2,11 +2,17 @@
 '''
 State module for Cisco NSO Proxy minions
 
-.. versionadded: Carbon
+.. versionadded: 2016.11.0
 
 For documentation on setting up the cisconso proxy minion look in the documentation
-for :doc:`salt.proxy.cisconso</ref/proxy/all/salt.proxy.cisconso>`.
+for :mod:`salt.proxy.cisconso <salt.proxy.cisconso>`.
 '''
+
+# Import Python libs
+from __future__ import absolute_import, print_function, unicode_literals
+
+# Import Salt libs
+import salt.utils.compat
 
 
 def __virtual__():
@@ -25,7 +31,7 @@ def value_present(name, datastore, path, config):
     :type  datastore: :class:`DatastoreType` (``str`` enum).
 
     :param path: The device path to set the value at,
-        a list of element names in order, / seperated
+        a list of element names in order, / separated
     :type  path: ``list``, ``str`` OR ``tuple``
 
     :param config: The new value at the given path
@@ -53,7 +59,7 @@ def value_present(name, datastore, path, config):
 
     existing = __salt__['cisconso.get_data'](datastore, path)
 
-    if cmp(existing, config):
+    if salt.utils.compat.cmp(existing, config):
         ret['result'] = True
         ret['comment'] = 'Config is already set'
 

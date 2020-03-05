@@ -1,3 +1,5 @@
+.. _proxy-minion-ssh-end-to-end-example:
+
 ========================================
 Salt Proxy Minion SSH End-to-End Example
 ========================================
@@ -18,7 +20,6 @@ Now, configure your salt-proxy.
 .. code-block:: yaml
 
    master: localhost
-   add_proxymodule_to_opts: False
    multiprocessing: False
 
 2. On your salt-master, ensure that pillar is configured properly.  Select an ID
@@ -34,15 +35,13 @@ Now, configure your salt-proxy.
 
 
 This says that Salt's pillar should load some values for the proxy ``p8000``
-from the file /srv/pillar/p8000.sls (if you have not changed your default pillar_roots)
+from the file ``/srv/pillar/p8000.sls`` (if you have not changed your default pillar_roots)
 
-3. In the pillar root for your base environment, create this file:
+3. In the pillar root for your base environment, create the ``p8000.sls`` file with the
+   following contents: 
 
 
 .. code-block:: yaml
-
-   p8000.sls
-   ---------
 
    proxy:
      proxytype: ssh_sample

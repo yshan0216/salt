@@ -5,15 +5,16 @@ Manage Dell DRAC from the Master
 The login credentials need to be configured in the Salt master
 configuration file.
 
-  .. code-block: yaml
+.. code-block: yaml
 
-      drac:
-        username: admin
-        password: secret
+    drac:
+      username: admin
+      password: secret
+
 '''
 
 # Import python libs
-from __future__ import absolute_import, print_function
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
 
 # Import 3rd-party libs
@@ -30,18 +31,28 @@ def __virtual__():
     if HAS_PARAMIKO:
         return True
 
-    return False
+    return False, 'The drac runner module cannot be loaded: paramiko package is not installed.'
 
 
 def __connect(hostname, timeout=20, username=None, password=None):
     '''
     Connect to the DRAC
     '''
+    drac_cred = __opts__.get('drac')
+    err_msg = 'No drac login credentials found. Please add the \'username\' and \'password\' ' \
+              'fields beneath a \'drac\' key in the master configuration file. Or you can ' \
+              'pass in a username and password as kwargs at the CLI.'
 
     if not username:
-        username = __opts__['drac'].get('username', None)
+        if drac_cred is None:
+            log.error(err_msg)
+            return False
+        username = drac_cred.get('username', None)
     if not password:
-        password = __opts__['drac'].get('password', None)
+        if drac_cred is None:
+            log.error(err_msg)
+            return False
+        password = drac_cred.get('password', None)
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -49,7 +60,7 @@ def __connect(hostname, timeout=20, username=None, password=None):
     try:
         client.connect(hostname, username=username, password=password, timeout=timeout)
     except Exception as e:
-        log.error('Unable to connect to {0}: {1}'.format(hostname, e))
+        log.error('Unable to connect to %s: %s', hostname, e)
         return False
 
     return client
@@ -97,14 +108,14 @@ def pxe(hostname, timeout=20, username=None, password=None):
 
     if isinstance(client, paramiko.SSHClient):
         for i, cmd in enumerate(_cmds, 1):
-            log.info('Executing command {0}'.format(i))
+            log.info('Executing command %s', i)
 
             (stdin, stdout, stderr) = client.exec_command(cmd)
 
         if 'successful' in stdout.readline():
-            log.info('Executing command: {0}'.format(cmd))
+            log.info('Executing command: %s', cmd)
         else:
-            log.error('Unable to execute: {0}'.format(cmd))
+            log.error('Unable to execute: %s', cmd)
             return False
 
     return True

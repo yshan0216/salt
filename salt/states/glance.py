@@ -4,7 +4,7 @@ Managing Images in OpenStack Glance
 ===================================
 '''
 # Import python libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
 import time
 
@@ -12,13 +12,23 @@ import time
 
 # Import OpenStack libs
 try:
-    from keystoneclient.apiclient.exceptions import \
+    from keystoneclient.exceptions import \
         Unauthorized as kstone_Unauthorized
+    HAS_KEYSTONE = True
+except ImportError:
+    try:
+        from keystoneclient.apiclient.exceptions import \
+            Unauthorized as kstone_Unauthorized
+        HAS_KEYSTONE = True
+    except ImportError:
+        HAS_KEYSTONE = False
+
+try:
     from glanceclient.exc import \
         HTTPUnauthorized as glance_Unauthorized
-    HAS_DEPENDENCIES = True
+    HAS_GLANCE = True
 except ImportError:
-    HAS_DEPENDENCIES = False
+    HAS_GLANCE = False
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +37,7 @@ def __virtual__():
     '''
     Only load if dependencies are loaded
     '''
-    return HAS_DEPENDENCIES
+    return HAS_KEYSTONE and HAS_GLANCE
 
 
 def _find_image(name):
@@ -38,27 +48,31 @@ def _find_image(name):
         - False, 'Found more than one image with given name'
     '''
     try:
-        images_dict = __salt__['glance.image_list'](name=name)
+        images = __salt__['glance.image_list'](name=name)
     except kstone_Unauthorized:
         return False, 'keystoneclient: Unauthorized'
     except glance_Unauthorized:
         return False, 'glanceclient: Unauthorized'
-    log.debug('Got images_dict: {0}'.format(images_dict))
+    log.debug('Got images: %s', images)
 
-    # I /think/ this will still work when glance.image_list
-    # starts returning a list instead of a dictionary...
-    if len(images_dict) == 0:
+    if type(images) is dict and len(images) == 1 and 'images' in images:
+        images = images['images']
+
+    images_list = images.values() if type(images) is dict else images
+
+    if not images_list:
         return None, 'No image with name "{0}"'.format(name)
-    elif len(images_dict) == 1:
-        return images_dict.values()[0], 'Found image {0}'.format(name)
-    elif len(images_dict) > 1:
+    elif len(images_list) == 1:
+        return images_list[0], 'Found image {0}'.format(name)
+    elif len(images_list) > 1:
         return False, 'Found more than one image with given name'
     else:
         raise NotImplementedError
 
 
 def image_present(name, visibility='public', protected=None,
-        checksum=None, location=None, wait_for=None, timeout=30):
+        checksum=None, location=None, disk_format='raw', wait_for=None,
+        timeout=30):
     '''
     Checks if given image is present with properties
     set as specified.
@@ -77,6 +91,8 @@ def image_present(name, visibility='public', protected=None,
       - protected (bool)
       - checksum (string, md5sum)
       - location (URL, to copy from)
+      - disk_format ('raw' (default), 'vhd', 'vhdx', 'vmdk', 'vdi', 'iso',
+        'qcow2', 'aki', 'ari' or 'ami')
     '''
     ret = {'name': name,
             'changes': {},
@@ -115,8 +131,8 @@ def image_present(name, visibility='public', protected=None,
             return ret
         image = __salt__['glance.image_create'](name=name,
             protected=protected, visibility=visibility,
-            location=location)
-        log.debug('Created new image:\n{0}'.format(image))
+            location=location, disk_format=disk_format)
+        log.debug('Created new image:\n%s', image)
         ret['changes'] = {
             name:
                 {
@@ -133,8 +149,8 @@ def image_present(name, visibility='public', protected=None,
         while timer > 0:
             if 'status' in image and \
                     image['status'] in acceptable:
-                log.debug('Image {0} has reached status {1}'.format(
-                    image['name'], image['status']))
+                log.debug('Image %s has reached status %s',
+                          image['name'], image['status'])
                 break
             else:
                 timer -= 5
@@ -230,5 +246,5 @@ def image_present(name, visibility='public', protected=None,
         elif image['status'] in ['saving', 'queued']:
             ret['comment'] += 'Checksum won\'t be verified as image ' +\
                 'hasn\'t reached\n\t "status=active" yet.\n'
-    log.debug('glance.image_present will return: {0}'.format(ret))
+    log.debug('glance.image_present will return: %s', ret)
     return ret

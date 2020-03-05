@@ -6,13 +6,13 @@ Support for firewalld.
 '''
 
 # Import Python Libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
 import re
 
 # Import Salt Libs
 from salt.exceptions import CommandExecutionError
-import salt.utils
+import salt.utils.path
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ def __virtual__():
     '''
     Check to see if firewall-cmd exists
     '''
-    if salt.utils.which('firewall-cmd'):
+    if salt.utils.path.which('firewall-cmd'):
         return True
 
     return (False, 'The firewalld execution module cannot be loaded: the firewall-cmd binary is not in the path.')
@@ -31,7 +31,7 @@ def __firewall_cmd(cmd):
     '''
     Return the firewall-cmd location
     '''
-    firewall_cmd = '{0} {1}'.format(salt.utils.which('firewall-cmd'), cmd)
+    firewall_cmd = '{0} {1}'.format(salt.utils.path.which('firewall-cmd'), cmd)
     out = __salt__['cmd.run_all'](firewall_cmd)
 
     if out['retcode'] != 0:
@@ -73,7 +73,7 @@ def reload_rules():
     Reload the firewall rules, which makes the permanent configuration the new
     runtime configuration without losing state information.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -438,7 +438,7 @@ def add_service_port(service, port):
     '''
     Add a new port to the specified service.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -457,7 +457,7 @@ def remove_service_port(service, port):
     '''
     Remove a port from the specified service.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -476,7 +476,7 @@ def get_service_ports(service):
     '''
     List ports of a service.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -492,7 +492,7 @@ def add_service_protocol(service, protocol):
     '''
     Add a new protocol to the specified service.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -509,7 +509,7 @@ def remove_service_protocol(service, protocol):
     '''
     Remove a protocol from the specified service.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -526,7 +526,7 @@ def get_service_protocols(service):
     '''
     List protocols of a service.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -551,7 +551,7 @@ def get_masquerade(zone=None, permanent=True):
     '''
     zone_info = list_all(zone, permanent)
 
-    if 'no' in [zone_info[i]['masquerade'][0] for i in zone_info.keys()]:
+    if 'no' in [zone_info[i]['masquerade'][0] for i in zone_info]:
         return False
 
     return True
@@ -629,9 +629,6 @@ def add_port(zone, port, permanent=True):
 
         salt '*' firewalld.add_port internal 443/tcp
     '''
-    if not get_masquerade(zone):
-        add_masquerade(zone)
-
     cmd = '--zone={0} --add-port={1}'.format(zone, port)
 
     if permanent:
@@ -692,9 +689,6 @@ def add_port_fwd(zone, src, dest, proto='tcp', dstaddr='', permanent=True):
 
         salt '*' firewalld.add_port_fwd public 80 443 tcp
     '''
-    if not get_masquerade(zone):
-        add_masquerade(zone, permanent)
-
     cmd = '--zone={0} --add-forward-port=port={1}:proto={2}:toport={3}:toaddr={4}'.format(
         zone,
         src,
@@ -994,7 +988,7 @@ def get_rich_rules(zone, permanent=True):
     '''
     List rich rules bound to a zone
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -1014,7 +1008,7 @@ def add_rich_rule(zone, rule, permanent=True):
     '''
     Add a rich rule to a zone
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -1034,7 +1028,7 @@ def remove_rich_rule(zone, rule, permanent=True):
     '''
     Add a rich rule to a zone
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
 
     CLI Example:
 

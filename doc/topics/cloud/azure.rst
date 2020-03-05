@@ -14,23 +14,11 @@ More information about Azure is located at `http://www.windowsazure.com/
 
 Dependencies
 ============
-* The `Azure <https://pypi.python.org/pypi/azure>`_ Python SDK >= 0.10.2 and < 1.0.0
+* `Microsoft Azure SDK for Python <https://pypi.python.org/pypi/azure/1.0.2>`_ >= 1.0.2
 * The python-requests library, for Python < 2.7.9.
 * A Microsoft Azure account
 * OpenSSL (to generate the certificates)
 * `Salt <https://github.com/saltstack/salt>`_
-
-
-.. note::
-
-    The Azure driver is currently being updated to work with the new version of
-    the Python Azure SDK, 1.0.0. However until that process is complete, this
-    driver will not work with Azure 1.0.0. Please be sure you're running on a
-    minimum version of 0.10.2 and less than version 1.0.0.
-
-    See `Issue #27980`_ for more information.
-
-.. _Issue #27980: https://github.com/saltstack/salt/issues/27980
 
 
 Configuration
@@ -120,7 +108,7 @@ it can be verified with Salt:
 
 .. code-block:: bash
 
-    salt newinstance test.ping
+    salt newinstance test.version
 
 
 Profile Options
@@ -198,7 +186,7 @@ The name of the service in which to create the VM. If this is not specified,
 then a service will be created with the same name as the VM.
 
 virtual_network_name
-------------
+--------------------
 Optional. The name of the virtual network for the VM to join. If this is not
 specified, then no virtual network will be joined.
 
@@ -532,7 +520,7 @@ services. For more information on service certificates, see the following link:
 
 * `Manage Certificates`__
 
-.. __: https://msdn.microsoft.com/en-us/library/azure/gg981929.aspx
+.. __: https://docs.microsoft.com/en-us/azure/cloud-services/cloud-services-certs-create
 
 The following functions are available.
 
@@ -710,7 +698,7 @@ set in the master's configuration file:
 
 .. code-block:: bash
 
-    requests_lib: True
+    backend: requests
 
 The following functions are available.
 

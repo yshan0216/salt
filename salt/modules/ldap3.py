@@ -11,7 +11,9 @@ This is an alternative to the ``ldap`` interface provided by the
 :depends: - ``ldap`` Python module
 '''
 
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
+import logging
+import sys
 
 available_backends = set()
 try:
@@ -22,9 +24,9 @@ try:
     available_backends.add('ldap')
 except ImportError:
     pass
-import logging
-import salt.ext.six as six
-import sys
+
+import salt.utils.data
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +79,20 @@ def _bind(l, bind=None):
     else:
         raise ValueError('unsupported bind method "' + method
                          + '"; supported bind methods: simple sasl')
+
+
+def _format_unicode_password(pwd):
+    '''Formats a string per Microsoft AD password specifications.
+    The string must be enclosed in double quotes and UTF-16 encoded.
+    See: https://msdn.microsoft.com/en-us/library/cc223248.aspx
+
+    :param pwd:
+       The desired password as a string
+
+    :returns:
+        A unicode string
+    '''
+    return '"{0}"'.format(pwd).encode('utf-16-le')
 
 
 class _connect_ctx(object):
@@ -231,6 +247,18 @@ def connect(connect_spec=None):
 
         This object should be used as a context manager.  It is safe
         to nest ``with`` statements.
+
+    CLI example:
+
+    .. code-block:: bash
+
+        salt '*' ldap3.connect "{
+            'url': 'ldaps://ldap.example.com/',
+            'bind': {
+                'method': 'simple',
+                'dn': 'cn=admin,dc=example,dc=com',
+                'password': 'secret'}
+        }"
     '''
     if isinstance(connect_spec, _connect_ctx):
         return connect_spec
@@ -357,16 +385,31 @@ def add(connect_spec, dn, attributes):
 
     :returns:
         ``True`` if successful, raises an exception otherwise.
+
+    CLI example:
+
+    .. code-block:: bash
+
+        salt '*' ldap3.add "{
+            'url': 'ldaps://ldap.example.com/',
+            'bind': {
+                'method': 'simple',
+                'password': 'secret',
+            },
+        }" "dn='dc=example,dc=com'" "attributes={'example': 'values'}"
     '''
     l = connect(connect_spec)
     # convert the "iterable of values" to lists in case that's what
     # addModlist() expects (also to ensure that the caller's objects
     # are not modified)
-    attributes = dict(((attr, list(vals))
+    attributes = dict(((attr, salt.utils.data.encode(list(vals)))
                        for attr, vals in six.iteritems(attributes)))
-    log.info('adding entry: dn: {0} attributes: {1}'.format(
-        repr(dn), repr(attributes)))
-    modlist = ldap.modlist.addModlist(attributes)
+    log.info('adding entry: dn: %s attributes: %s', repr(dn), repr(attributes))
+
+    if 'unicodePwd' in attributes:
+        attributes['unicodePwd'] = [_format_unicode_password(x) for x in attributes['unicodePwd']]
+
+    modlist = ldap.modlist.addModlist(attributes),
     try:
         l.c.add_s(dn, modlist)
     except ldap.LDAPError as e:
@@ -386,9 +429,20 @@ def delete(connect_spec, dn):
 
     :returns:
         ``True`` if successful, raises an exception otherwise.
+
+    CLI example:
+
+    .. code-block:: bash
+
+        salt '*' ldap3.delete "{
+            'url': 'ldaps://ldap.example.com/',
+            'bind': {
+                'method': 'simple',
+                'password': 'secret'}
+        }" dn='cn=admin,dc=example,dc=com'
     '''
     l = connect(connect_spec)
-    log.info('deleting entry: dn: {0}'.format(repr(dn)))
+    log.info('deleting entry: dn: %s', repr(dn))
     try:
         l.c.delete_s(dn)
     except ldap.LDAPError as e:
@@ -430,6 +484,18 @@ def modify(connect_spec, dn, directives):
 
     :returns:
         ``True`` if successful, raises an exception otherwise.
+
+    CLI example:
+
+    .. code-block:: bash
+
+        salt '*' ldap3.modify "{
+            'url': 'ldaps://ldap.example.com/',
+            'bind': {
+                'method': 'simple',
+                'password': 'secret'}
+        }" dn='cn=admin,dc=example,dc=com'
+        directives="('add', 'example', ['example_val'])"
     '''
     l = connect(connect_spec)
     # convert the "iterable of values" to lists in case that's what
@@ -437,6 +503,13 @@ def modify(connect_spec, dn, directives):
     # not modified)
     modlist = [(getattr(ldap, 'MOD_' + op.upper()), attr, list(vals))
                for op, attr, vals in directives]
+
+    for idx, mod in enumerate(modlist):
+        if mod[1] == 'unicodePwd':
+            modlist[idx] = (mod[0], mod[1],
+                [_format_unicode_password(x) for x in mod[2]])
+
+    modlist = salt.utils.data.decode(modlist, to_str=True, preserve_tuples=True)
     try:
         l.c.modify_s(dn, modlist)
     except ldap.LDAPError as e:
@@ -477,16 +550,34 @@ def change(connect_spec, dn, before, after):
 
     :returns:
         ``True`` if successful, raises an exception otherwise.
+
+    CLI example:
+
+    .. code-block:: bash
+
+        salt '*' ldap3.change "{
+            'url': 'ldaps://ldap.example.com/',
+            'bind': {
+                'method': 'simple',
+                'password': 'secret'}
+        }" dn='cn=admin,dc=example,dc=com'
+        before="{'example_value': 'before_val'}"
+        after="{'example_value': 'after_val'}"
     '''
     l = connect(connect_spec)
     # convert the "iterable of values" to lists in case that's what
     # modifyModlist() expects (also to ensure that the caller's dicts
     # are not modified)
-    before = dict(((attr, list(vals))
+    before = dict(((attr, salt.utils.data.encode(list(vals)))
                    for attr, vals in six.iteritems(before)))
-    after = dict(((attr, list(vals))
+    after = dict(((attr, salt.utils.data.encode(list(vals)))
                   for attr, vals in six.iteritems(after)))
+
+    if 'unicodePwd' in after:
+        after['unicodePwd'] = [_format_unicode_password(x) for x in after['unicodePwd']]
+
     modlist = ldap.modlist.modifyModlist(before, after)
+
     try:
         l.c.modify_s(dn, modlist)
     except ldap.LDAPError as e:

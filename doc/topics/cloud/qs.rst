@@ -5,8 +5,18 @@ Salt Cloud Quickstart
 =====================
 
 Salt Cloud is built-in to Salt, and the easiest way to run Salt Cloud is
-directly from your Salt Master. On most platforms you can install the
-``salt-cloud`` package from the same repo that you used to install Salt.
+directly from your Salt Master.
+
+Note that if you installed Salt via `Salt Bootstrap`_, it may not have
+automatically installed salt-cloud for you. Use your distribution's package
+manager to install the ``salt-cloud`` package from the same repo that you
+used to install Salt.  These repos will automatically be setup by Salt Bootstrap.
+
+Alternatively, the ``-L`` option can be passed to the `Salt Bootstrap`_ script when
+installing Salt. The ``-L`` option will install ``salt-cloud`` and the required
+``libcloud`` package.
+
+.. _`Salt Bootstrap`: https://github.com/saltstack/salt-bootstrap
 
 This quickstart walks you through the basic steps of setting up a cloud host
 and defining some virtual machines to create.
@@ -92,7 +102,7 @@ a few examples:
       size: m3.large
 
 Notice that the ``provider`` in our profile matches the provider name that we
-defined? That is how Salt Cloud knows how to connect to to a cloud host to
+defined? That is how Salt Cloud knows how to connect to a cloud host to
 create a VM with these attributes.
 
 Create VMs

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 '''
 Manage CognitoIdentity Functions
-=================
+================================
 
-.. versionadded:: Boron
+.. versionadded:: 2016.11.0
 
 Create and destroy CognitoIdentity identity pools. Be aware that this interacts with
 Amazon's services, and so may incur charges.
@@ -47,7 +47,7 @@ config:
 '''
 
 # Import Python Libs
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
 from salt.ext.six import string_types
 

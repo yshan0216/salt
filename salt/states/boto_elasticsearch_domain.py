@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 '''
 Manage Elasticsearch Domains
-=================
+============================
 
-.. versionadded:: Carbon
+.. versionadded:: 2016.11.0
 
 Create and destroy Elasticsearch domains. Be aware that this interacts with Amazon's services,
 and so may incur charges.
@@ -31,9 +31,9 @@ config:
 .. code-block:: yaml
 
     myprofile:
-        keyid: GKTADJGHEIQSXMKKRBJ08H
-        key: askdjghsdfjkghWupUjasdflkdfklgjsdfjajkghs
-            region: us-east-1
+      keyid: GKTADJGHEIQSXMKKRBJ08H
+      key: askdjghsdfjkghWupUjasdflkdfklgjsdfjajkghs
+      region: us-east-1
 
 .. code-block:: yaml
 
@@ -41,6 +41,7 @@ config:
         boto_elasticsearch_domain.present:
             - DomainName: mydomain
             - profile='user-credentials'
+            - ElasticsearchVersion: "2.3"
             - ElasticsearchClusterConfig:
                 InstanceType": "t2.micro.elasticsearch"
                 InstanceCount: 1
@@ -59,12 +60,12 @@ config:
                       AWS: "*"
                   - Action:
                     - "es:*"
-                  - Resource: "arn:aws:es:*:111111111111:domain/mydomain/*
+                  - Resource: "arn:aws:es:*:111111111111:domain/mydomain/*"
                   - Condition:
                       IpAddress:
                         "aws:SourceIp":
-                          - "127.0.0.1",
-                          - "127.0.0.2",
+                          - "127.0.0.1"
+                          - "127.0.0.2"
             - SnapshotOptions:
                 AutomatedSnapshotStartHour: 0
             - AdvancedOptions:
@@ -77,15 +78,16 @@ config:
 
 '''
 
-# Import Python Libs
-from __future__ import absolute_import
+# Import Python libs
+from __future__ import absolute_import, print_function, unicode_literals
 import logging
 import os
-import os.path
-import json
 
-# Import Salt Libs
-from salt.ext.six import string_types
+# Import Salt libs
+import salt.utils.json
+
+# Import 3rd-party libs
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +99,10 @@ def __virtual__():
     return 'boto_elasticsearch_domain' if 'boto_elasticsearch_domain.exists' in __salt__ else False
 
 
+def _compare_json(current, desired):
+    return __utils__['boto3.json_objs_equal'](current, desired)
+
+
 def present(name, DomainName,
             ElasticsearchClusterConfig=None,
             EBSOptions=None,
@@ -104,7 +110,8 @@ def present(name, DomainName,
             SnapshotOptions=None,
             AdvancedOptions=None,
             Tags=None,
-            region=None, key=None, keyid=None, profile=None):
+            region=None, key=None, keyid=None, profile=None,
+            ElasticsearchVersion="1.5"):
     '''
     Ensure domain exists.
 
@@ -184,6 +191,10 @@ def present(name, DomainName,
     profile
         A dict with region, key and keyid, or a pillar key (string) that
         contains a dict with region, key and keyid.
+
+    ElasticsearchVersion
+        String of format X.Y to specify version for the Elasticsearch domain eg.
+        "1.5" or "2.3".
     '''
     ret = {'name': DomainName,
            'result': True,
@@ -212,9 +223,9 @@ def present(name, DomainName,
         }
     if Tags is None:
         Tags = {}
-    if AccessPolicies is not None and isinstance(AccessPolicies, string_types):
+    if AccessPolicies is not None and isinstance(AccessPolicies, six.string_types):
         try:
-            AccessPolicies = json.loads(AccessPolicies)
+            AccessPolicies = salt.utils.json.loads(AccessPolicies)
         except ValueError as e:
             ret['result'] = False
             ret['comment'] = 'Failed to create domain: {0}.'.format(e.message)
@@ -238,6 +249,7 @@ def present(name, DomainName,
                                                      AccessPolicies=AccessPolicies,
                                                      SnapshotOptions=SnapshotOptions,
                                                      AdvancedOptions=AdvancedOptions,
+                                                     ElasticsearchVersion=str(ElasticsearchVersion),  # future lint: disable=blacklisted-function
                                                region=region, key=key,
                                                keyid=keyid, profile=profile)
         if not r.get('created'):
@@ -254,10 +266,23 @@ def present(name, DomainName,
     ret['comment'] = os.linesep.join([ret['comment'], 'Domain {0} is present.'.format(DomainName)])
     ret['changes'] = {}
     # domain exists, ensure config matches
+    _status = __salt__['boto_elasticsearch_domain.status'](DomainName=DomainName,
+                                  region=region, key=key, keyid=keyid,
+                                  profile=profile)['domain']
+    if _status.get('ElasticsearchVersion') != str(ElasticsearchVersion):  # future lint: disable=blacklisted-function
+        ret['result'] = False
+        ret['comment'] = (
+            'Failed to update domain: version cannot be modified '
+            'from {0} to {1}.'.format(
+                _status.get('ElasticsearchVersion'),
+                str(ElasticsearchVersion)  # future lint: disable=blacklisted-function
+            )
+        )
+        return ret
     _describe = __salt__['boto_elasticsearch_domain.describe'](DomainName=DomainName,
                                   region=region, key=key, keyid=keyid,
                                   profile=profile)['domain']
-    _describe['AccessPolicies'] = json.loads(_describe['AccessPolicies'])
+    _describe['AccessPolicies'] = salt.utils.json.loads(_describe['AccessPolicies'])
 
     # When EBSEnabled is false, describe returns extra values that can't be set
     if not _describe.get('EBSOptions', {}).get('EBSEnabled'):
@@ -267,14 +292,14 @@ def present(name, DomainName,
 
     comm_args = {}
     need_update = False
-    for k, v in {
-        'ElasticsearchClusterConfig': ElasticsearchClusterConfig,
-        'EBSOptions': EBSOptions,
-        'AccessPolicies': AccessPolicies,
-        'SnapshotOptions': SnapshotOptions,
-        'AdvancedOptions': AdvancedOptions
-    }.iteritems():
-        if v != _describe[k]:
+    es_opts = {'ElasticsearchClusterConfig': ElasticsearchClusterConfig,
+               'EBSOptions': EBSOptions,
+               'AccessPolicies': AccessPolicies,
+               'SnapshotOptions': SnapshotOptions,
+               'AdvancedOptions': AdvancedOptions}
+
+    for k, v in six.iteritems(es_opts):
+        if not _compare_json(v, _describe[k]):
             need_update = True
             comm_args[k] = v
             ret['changes'].setdefault('new', {})[k] = v

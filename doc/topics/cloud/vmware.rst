@@ -1,3 +1,5 @@
+.. _cloud-getting-started-vmware:
+
 ===========================
 Getting Started With VMware
 ===========================
@@ -36,6 +38,14 @@ This package can be installed using `pip` or `easy_install`:
 
 .. _Issue #29537: https://github.com/saltstack/salt/issues/29537
 
+.. note::
+
+    pyVmomi doesn't expose the ability to specify the locale when connecting to
+    VMware. This causes parsing issues when connecting to an instance of VMware
+    running under a non-English locale. Until this feature is added upstream
+    `Issue #38402`_ contains a workaround.
+
+.. _Issue #38402: https://github.com/saltstack/salt/issues/38402
 
 Configuration
 =============
@@ -129,6 +139,7 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
           Hard disk 3:
             size: 5
             controller: SCSI controller 3
+            datastore: smalldiskdatastore
         network:
           Network adapter 1:
             name: 10.20.30-400-Test
@@ -141,6 +152,7 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
             name: 10.30.40-500-Dev-DHCP
             adapter_type: e1000
             switch_type: distributed
+            mac: '00:16:3e:e8:19:0f'
           Network adapter 3:
             name: 10.40.50-600-Prod
             adapter_type: vmxnet3
@@ -159,8 +171,8 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
             type: paravirtual
             bus_sharing: physical
         ide:
-          IDE 2
-          IDE 3
+          IDE 2: {}
+          IDE 3: {}
 
       domain: example.com
       dns_servers:
@@ -182,6 +194,7 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
         guestinfo.foo: bar
         guestinfo.domain: foobar.com
         guestinfo.customVariable: customValue
+      annotation: Created by Salt-Cloud
 
       deploy: True
       customization: True
@@ -198,7 +211,7 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
 
       hardware_version: 10
       image: centos64Guest
-      
+
       #For Windows VM
       win_username: Administrator
       win_password: administrator
@@ -214,18 +227,26 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
     Enter the name of the VM/template to clone from. If not specified, the VM will be created
     without cloning.
 
+``clonefrom_datacenter``
+    If the VM/template to clone exists in a different datacenter than the destination
+    datacenter, supply the source VM/template's datacenter here.
+    This defaults to the same value as ``datacenter``.
+
+    .. versionadded:: neon
+
 ``num_cpus``
     Enter the number of vCPUS that you want the VM/template to have. If not specified,
     the current VM/template\'s vCPU count is used.
 
 ``cores_per_socket``
-    .. versionadded:: Boron
     Enter the number of cores per vCPU that you want the VM/template to have. If not specified,
-    this will default to 1. 
-    
-    .. note::
+    this will default to 1.
 
-        Cores per socket should be less than or equal to the total number of vCPUs assigned to the VM/template.
+    .. note::
+        Cores per socket should be less than or equal to the total number of
+        vCPUs assigned to the VM/template.
+
+    .. versionadded:: 2016.11.0
 
 ``memory``
     Enter the memory size (in MB or GB) that you want the VM/template to have. If
@@ -270,10 +291,17 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
         thin_provision
             Specifies whether the disk should be thin provisioned or not. Default is ``thin_provision: False``.
             .. versionadded:: 2016.3.0
+        eagerly_scrub
+            Specifies whether the disk should be rewrite with zeros during thick provisioning or not.
+            Default is ``eagerly_scrub: False``.
+            .. versionadded:: 2018.3.0
         controller
             Specify the SCSI controller label to which this disk should be attached.
             This should be specified only when creating both the specified SCSI
             controller as well as the hard disk at the same time.
+        datastore
+            The name of a valid datastore should you wish the new disk to be in
+            a datastore other than the default for the VM.
 
     network
         Enter the network adapter specification here. If the network adapter doesn\'t
@@ -312,6 +340,10 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
             Enter the domain to be used with the network adapter. If the network
             specified is DHCP enabled, you do not have to specify this.
 
+        mac
+            Enter the MAC for this network adapter. If not specified an address
+            will be selected automatically.
+
     scsi
         Enter the SCSI controller specification here. If the SCSI controller doesn\'t exist,
         a new SCSI controller will be created of the specified type. If the SCSI controller
@@ -338,8 +370,14 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
 
     ide
         Enter the IDE controller specification here. If the IDE controller doesn\'t exist,
-        a new IDE controller will be created. If the IDE controller already exists,
-        no further changes to it will me made.
+        a new IDE controller is created. If the IDE controller already exists,
+        no further changes to it are made. The IDE controller specification is
+        a dictionary.
+
+        .. code-block:: yaml
+
+          ide:
+            IDE 2: {}
 
 ``domain``
     Enter the global domain name to be used for DNS. If not specified and if the VM name
@@ -432,10 +470,23 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
     present, it will be reset with the new value provided. Otherwise, a new option is
     added. Keys with empty values will be removed.
 
+``annotation``
+    User-provided description of the virtual machine. This will store a message in the
+    vSphere interface, under the annotations section in the Summary view of the virtual
+    machine.
+
 ``deploy``
     Specifies if salt should be installed on the newly created VM. Default is ``True``
     so salt will be installed using the bootstrap script. If ``template: True`` or
     ``power_on: False`` is set, this field is ignored and salt will not be installed.
+
+``wait_for_ip_timeout``
+    When ``deploy: True``, this timeout determines the maximum time to wait for
+    VMware tools to be installed on the virtual machine. If this timeout is
+    reached, an attempt to determine the client's IP will be made by resolving
+    the VM's name.  By lowering this value a salt bootstrap can be fully
+    automated for systems that are not built with VMware tools.  Default is
+    ``wait_for_ip_timeout: 1200``.
 
 ``customization``
     Specify whether the new virtual machine should be customized or not. If
@@ -478,38 +529,91 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
 
 ``win_username``
     Specify windows vm administrator account.
-        
+
     .. note::
-    
-    	Windows template should have "administrator" account.
+
+        Windows template should have "administrator" account.
 
 ``win_password``
     Specify windows vm administrator account password.
-    
+
     .. note::
 
-        During network configuration (if network specified), it is used to specify new administrator password for the machine. 
+        During network configuration (if network specified), it is used to specify new administrator password for the machine.
 
 ``win_organization_name``
     Specify windows vm user's organization. Default organization name is Organization
    	VMware vSphere documentation:
-	
+
     https://www.vmware.com/support/developer/vc-sdk/visdk25pubs/ReferenceGuide/vim.vm.customization.UserData.html
 
 ``win_user_fullname``
     Specify windows vm user's fullname. Default fullname is "Windows User"
    	VMware vSphere documentation:
-	
+
     https://www.vmware.com/support/developer/vc-sdk/visdk25pubs/ReferenceGuide/vim.vm.customization.UserData.html
 
-``plain_text``    	
-	Flag to specify whether or not the password is in plain text, rather than encrypted.
-	VMware vSphere documentation:
+``plain_text``
+    Flag to specify whether or not the password is in plain text, rather than encrypted.
+    VMware vSphere documentation:
 
-	https://www.vmware.com/support/developer/vc-sdk/visdk25pubs/ReferenceGuide/vim.vm.customization.Password.html
+    https://www.vmware.com/support/developer/vc-sdk/visdk25pubs/ReferenceGuide/vim.vm.customization.Password.html
 
 ``win_installer``
     Specify windows minion client installer path
+
+``win_run_once``
+    Specify a list of commands to run on first login to a windows minion
+
+    https://www.vmware.com/support/developer/vc-sdk/visdk25pubs/ReferenceGuide/vim.vm.customization.GuiRunOnce.html
+
+``win_ad_domain``
+    Specify the AD domain to join during customization.  ``win_ad_user`` and ``win_ad_password``
+    must also be specified.
+
+    Default is not set.
+
+    .. versionadded:: neon
+
+``win_ad_user``
+    Specify the user from ``win_ad_domain`` that will be used to join the computer to the domain
+    during customization.
+
+    Default is not set.
+
+    .. versionadded:: neon
+
+``win_ad_password``
+    Specify the password for the ``win_ad_user``.
+
+    Default is not set.
+
+    .. versionadded:: neon
+
+``win_autologon``
+    Specify if the local "Administrator" account should be logged in to the Windows machine
+    after the cloning process.
+
+    Defaults to 'True', must be 'True' for ``win_run_once`` to be executed.
+
+    .. versionadded:: neon
+
+``timezone``
+    Specify the timezone to apply to the VM during customization.
+
+    See https://www.vmware.com/support/developer/vc-sdk/visdk400pubs/ReferenceGuide/vim.vm.customization.LinuxPrep.html for Linux timezone information.
+    See https://www.vmware.com/support/developer/vc-sdk/visdk400pubs/ReferenceGuide/vim.vm.customization.GuiUnattended.html for Windows timezone information.
+
+    Default is not set.
+
+    .. versionadded:: neon
+
+``hw_clock_utc``
+    Specify whether the hardware clock is in UTC or local time.
+
+    Default is not set.
+
+    .. versionadded:: neon
 
 Cloning a VM
 ============
@@ -562,7 +666,7 @@ Example to reconfigure the memory and number of vCPUs:
       clonefrom: 'test-vm'
 
       memory: 16GB
-      num_cpus: 8 
+      num_cpus: 8
 
 
 Cloning a Template
@@ -579,6 +683,34 @@ Example of a minimal profile:
      provider: vcenter01
      clonefrom: 'test-template'
      cluster: 'Prod'
+
+
+Cloning from a Snapshot
+=======================
+
+
+.. versionadded:: 2016.3.5
+
+Cloning from a snapshot requires that one of the
+supported options be set in the cloud profile.
+
+Supported options are ``createNewChildDiskBacking``,
+``moveChildMostDiskBacking``, ``moveAllDiskBackingsAndAllowSharing``
+and ``moveAllDiskBackingsAndDisallowSharing``.
+
+Example of a minimal profile:
+
+.. code-block:: yaml
+
+  my-template-clone:
+    provider: vcenter01
+    clonefrom: 'salt_vm'
+    snapshot:
+      disk_move_type: createNewChildDiskBacking
+      # these types are also supported
+      # disk_move_type: moveChildMostDiskBacking
+      # disk_move_type: moveAllDiskBackingsAndAllowSharing
+      # disk_move_type: moveAllDiskBackingsAndDisallowSharing
 
 
 Creating a VM
@@ -631,12 +763,13 @@ Example of a complete profile:
           SCSI controller 0:
             type: lsilogic_sas
         ide:
-          IDE 0
-          IDE 1
+          IDE 0: {}
+          IDE 1: {}
         disk:
           Hard disk 0:
             controller: 'SCSI controller 0'
             size: 20
+            mode: 'independent_nonpersistent'
         cd:
           CD/DVD drive 0:
             controller: 'IDE 0'
@@ -653,3 +786,29 @@ Example of a complete profile:
     be available. In such cases, the closest match to another ``image`` should
     be used. In the example above, a Debian 8 VM is created using the image
     ``debian7_64Guest`` which is for a Debian 7 guest.
+
+
+Specifying disk backing mode
+============================
+
+.. versionadded:: 2016.3.5
+
+Disk backing mode can now be specified when cloning a VM. This option
+can be set in the cloud profile as shown in example below:
+
+.. code-block:: yaml
+
+    my-vm:
+      provider: esx01
+      datastore: esx01-datastore
+      resourcepool: Resources
+      folder: vm
+
+
+      devices:
+        disk:
+          Hard disk 1:
+            mode: 'independent_nonpersistent'
+            size: 42
+          Hard disk 2:
+            mode: 'independent_nonpersistent'

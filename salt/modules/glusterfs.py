@@ -2,7 +2,7 @@
 '''
 Manage a glusterfs pool
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals, print_function
 
 # Import python libs
 import logging
@@ -10,9 +10,12 @@ import sys
 import xml.etree.ElementTree as ET
 
 # Import salt libs
-import salt.utils
-import salt.utils.cloud as suc
-from salt.exceptions import SaltInvocationError
+import salt.utils.cloud
+import salt.utils.path
+from salt.exceptions import SaltInvocationError, CommandExecutionError
+
+# Import 3rd-party libs
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
@@ -21,20 +24,21 @@ def __virtual__():
     '''
     Only load this module if the gluster command exists
     '''
-    if salt.utils.which('gluster'):
+    if salt.utils.path.which('gluster'):
         return True
     return (False, 'glusterfs server is not installed')
 
 
-def _get_minor_version():
-    # Set default version to 6 for tests
-    version = 6
+def _get_version():
+    # Set the default minor version to 6 for tests
+    version = [3, 6]
     cmd = 'gluster --version'
     result = __salt__['cmd.run'](cmd).splitlines()
     for line in result:
         if line.startswith('glusterfs'):
-            version = int(line.split()[1].split('.')[1])
-    return version
+            version = line.split()[-1].split('.')
+            version = [int(i) for i in version]
+    return tuple(version)
 
 
 def _gluster_ok(xml_data):
@@ -54,6 +58,8 @@ def _gluster_output_cleanup(result):
     for line in result.splitlines():
         if line.startswith('gluster>'):
             ret += line[9:].strip()
+        elif line.startswith('Welcome to gluster prompt'):
+            pass
         else:
             ret += line.strip()
 
@@ -67,7 +73,7 @@ def _gluster_xml(cmd):
     # We will pass the command string as stdin to allow for much longer
     # command strings. This is especially useful for creating large volumes
     # where the list of bricks exceeds 128 characters.
-    if _get_minor_version() < 6:
+    if _get_version() < (3, 6,):
         result = __salt__['cmd.run'](
             'script -q -c "gluster --xml --mode=script"', stdin="{0}\n\004".format(cmd)
         )
@@ -75,15 +81,25 @@ def _gluster_xml(cmd):
         result = __salt__['cmd.run'](
             'gluster --xml --mode=script', stdin="{0}\n".format(cmd)
         )
-    root = ET.fromstring(_gluster_output_cleanup(result))
+
+    try:
+        root = ET.fromstring(_gluster_output_cleanup(result))
+    except ET.ParseError:
+        raise CommandExecutionError('\n'.join(result.splitlines()[:-1]))
+
     if _gluster_ok(root):
         output = root.find('output')
-        if output:
-            log.info('Gluster call "{0}" succeeded: {1}'.format(cmd, root.find('output').text))
+        if output is not None:
+            log.info('Gluster call "%s" succeeded: %s',
+                     cmd,
+                     root.find('output').text)
         else:
-            log.info('Gluster call "{0}" succeeded'.format(cmd))
+            log.info('Gluster call "%s" succeeded', cmd)
     else:
-        log.error('Failed gluster call: {0}: {1}'.format(cmd, root.find('opErrstr').text))
+        log.error('Failed gluster call: %s: %s',
+                  cmd,
+                  root.find('opErrstr').text)
+
     return root
 
 
@@ -118,7 +134,7 @@ def peer_status():
     The return value is a dictionary with peer UUIDs as keys and dicts of peer
     information as values. Hostnames are listed in one list. GlusterFS separates
     one of the hostnames but the only reason for this seems to be which hostname
-    happens to be used firts in peering.
+    happens to be used first in peering.
 
     CLI Example:
 
@@ -165,25 +181,6 @@ def peer_status():
     return result
 
 
-def list_peers():
-    '''
-    Deprecated version of peer_status(), which returns the peered hostnames
-    and some additional information.
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt '*' glusterfs.list_peers
-
-    '''
-    salt.utils.warn_until(
-        'Nitrogen',
-        'The glusterfs.list_peers function is deprecated in favor of'
-        ' more verbose but very similar glusterfs.peer_status.')
-    return peer_status()
-
-
 def peer(name):
     '''
     Add another node into the peer list.
@@ -214,7 +211,7 @@ def peer(name):
 
 
     '''
-    if suc.check_name(name, 'a-zA-Z0-9._-'):
+    if salt.utils.cloud.check_name(name, 'a-zA-Z0-9._-'):
         raise SaltInvocationError(
             'Invalid characters in peer name "{0}"'.format(name))
 
@@ -223,9 +220,9 @@ def peer(name):
 
 
 def create_volume(name, bricks, stripe=False, replica=False, device_vg=False,
-           transport='tcp', start=False, force=False):
+                  transport='tcp', start=False, force=False, arbiter=False):
     '''
-    Create a glusterfs volume.
+    Create a glusterfs volume
 
     name
         Name of the gluster volume
@@ -243,6 +240,14 @@ def create_volume(name, bricks, stripe=False, replica=False, device_vg=False,
         Replica count, the number of bricks should be a multiple of the \
         replica count for a distributed replicated volume
 
+    arbiter
+        If true, specifies volume should use arbiter brick(s). \
+        Valid configuration limited to "replica 3 arbiter 1" per \
+        Gluster documentation. Every third brick in the brick list \
+        is used as an arbiter brick.
+
+        .. versionadded:: 2019.2.0
+
     device_vg
         If true, specifies volume should use block backend instead of regular \
         posix backend. Block device backend volume does not support multiple \
@@ -257,7 +262,7 @@ def create_volume(name, bricks, stripe=False, replica=False, device_vg=False,
     force
         Force volume creation, this works even if creating in root FS
 
-    CLI Example:
+    CLI Examples:
 
     .. code-block:: bash
 
@@ -267,7 +272,7 @@ def create_volume(name, bricks, stripe=False, replica=False, device_vg=False,
         "gluster2:/export/vol2/brick"]' replica=2 start=True
     '''
     # If single brick given as a string, accept it
-    if isinstance(bricks, str):
+    if isinstance(bricks, six.string_types):
         bricks = [bricks]
 
     # Error for block devices with multiple bricks
@@ -286,12 +291,19 @@ def create_volume(name, bricks, stripe=False, replica=False, device_vg=False,
             raise SaltInvocationError(
                 'Brick syntax is <peer>:<path> got {0}'.format(brick))
 
+    # Validate arbiter config
+    if arbiter and replica != 3:
+        raise SaltInvocationError('Arbiter configuration only valid ' +
+                                  'in replica 3 volume')
+
     # Format creation call
     cmd = 'volume create {0} '.format(name)
     if stripe:
         cmd += 'stripe {0} '.format(stripe)
     if replica:
         cmd += 'replica {0} '.format(replica)
+    if arbiter:
+        cmd += 'arbiter 1 '
     if device_vg:
         cmd += 'device vg '
     if transport != 'tcp':
@@ -306,18 +318,6 @@ def create_volume(name, bricks, stripe=False, replica=False, device_vg=False,
     if start:
         return start_volume(name)
     return True
-
-
-def create(*args, **kwargs):
-    '''
-    Deprecated version of more consistently named create_volume
-    '''
-    salt.utils.warn_until(
-        'Nitrogen',
-        'The glusterfs.create function is deprecated in favor of'
-        ' more descriptive glusterfs.create_volume.'
-    )
-    return create_volume(*args, **kwargs)
 
 
 def list_volumes():
@@ -355,7 +355,7 @@ def status(name):
     root = _gluster_xml('volume status {0}'.format(name))
     if not _gluster_ok(root):
         # Most probably non-existing volume, the error output is logged
-        # Tiis return value is easy to test and intuitive
+        # This return value is easy to test and intuitive
         return None
 
     ret = {'bricks': {}, 'nfs': {}, 'healers': {}}
@@ -406,7 +406,6 @@ def info(name=None):
     .. code-block:: bash
 
         salt '*' glusterfs.info
-
     '''
     cmd = 'volume info'
     if name is not None:
@@ -442,7 +441,7 @@ def info(name=None):
 
 def start_volume(name, force=False):
     '''
-    Start a gluster volume.
+    Start a gluster volume
 
     name
         Volume name
@@ -463,11 +462,11 @@ def start_volume(name, force=False):
 
     volinfo = info(name)
     if name not in volinfo:
-        log.error("Cannot start non-existing volume {0}".format(name))
+        log.error("Cannot start non-existing volume %s", name)
         return False
 
     if not force and volinfo[name]['status'] == '1':
-        log.info("Volume {0} already started".format(name))
+        log.info("Volume %s already started", name)
         return True
 
     return _gluster(cmd)
@@ -475,13 +474,14 @@ def start_volume(name, force=False):
 
 def stop_volume(name, force=False):
     '''
-    Stop a gluster volume.
+    Stop a gluster volume
 
     name
         Volume name
 
     force
         Force stop the volume
+
         .. versionadded:: 2015.8.4
 
     CLI Example:
@@ -492,10 +492,10 @@ def stop_volume(name, force=False):
     '''
     volinfo = info()
     if name not in volinfo:
-        log.error('Cannot stop non-existing volume {0}'.format(name))
+        log.error('Cannot stop non-existing volume %s', name)
         return False
     if int(volinfo[name]['status']) != 1:
-        log.warning('Attempt to stop already stopped volume {0}'.format(name))
+        log.warning('Attempt to stop already stopped volume %s', name)
         return True
 
     cmd = 'volume stop {0}'.format(name)
@@ -512,12 +512,18 @@ def delete_volume(target, stop=True):
     target
         Volume to delete
 
-    stop
-        Stop volume before delete if it is started, True by default
+    stop : True
+        If ``True``, stop volume before delete
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' glusterfs.delete_volume <volume>
     '''
     volinfo = info()
     if target not in volinfo:
-        log.error('Cannot delete non-existing volume {0}'.format(target))
+        log.error('Cannot delete non-existing volume %s', target)
         return False
 
     # Stop volume if requested to and it is running
@@ -525,7 +531,7 @@ def delete_volume(target, stop=True):
 
     if not stop and running:
         # Fail if volume is running if stop is not requested
-        log.error('Volume {0} must be stopped before deletion'.format(target))
+        log.error('Volume %s must be stopped before deletion', target)
         return False
 
     if running:
@@ -534,18 +540,6 @@ def delete_volume(target, stop=True):
 
     cmd = 'volume delete {0}'.format(target)
     return _gluster(cmd)
-
-
-def delete(*args, **kwargs):
-    '''
-    Deprecated version of more consistently named delete_volume
-    '''
-    salt.utils.warn_until(
-        'Nitrogen',
-        'The glusterfs.delete function is deprecated in favor of'
-        ' more descriptive glusterfs.delete_volume.'
-    )
-    return delete_volume(*args, **kwargs)
 
 
 def add_volume_bricks(name, bricks):
@@ -557,18 +551,24 @@ def add_volume_bricks(name, bricks):
 
     bricks
         List of bricks to add to the volume
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' glusterfs.add_volume_bricks <volume> <bricks>
     '''
 
     volinfo = info()
     if name not in volinfo:
-        log.error('Volume {0} does not exist, cannot add bricks'.format(name))
+        log.error('Volume %s does not exist, cannot add bricks', name)
         return False
 
     new_bricks = []
 
     cmd = 'volume add-brick {0}'.format(name)
 
-    if isinstance(bricks, str):
+    if isinstance(bricks, six.string_types):
         bricks = [bricks]
 
     volume_bricks = [x['path'] for x in volinfo[name]['bricks'].values()]
@@ -576,12 +576,251 @@ def add_volume_bricks(name, bricks):
     for brick in bricks:
         if brick in volume_bricks:
             log.debug(
-                'Brick {0} already in volume {1}...excluding from command'.format(brick, name))
+                'Brick %s already in volume %s...excluding from command',
+                brick,
+                name)
         else:
             new_bricks.append(brick)
 
-    if len(new_bricks) > 0:
+    if new_bricks:
         for brick in new_bricks:
             cmd += ' {0}'.format(brick)
         return _gluster(cmd)
     return True
+
+
+def enable_quota_volume(name):
+    '''
+    Enable quota on a glusterfs volume.
+
+    name
+        Name of the gluster volume
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' glusterfs.enable_quota_volume <volume>
+    '''
+
+    cmd = 'volume quota {0} enable'.format(name)
+    if not _gluster(cmd):
+        return False
+    return True
+
+
+def disable_quota_volume(name):
+    '''
+    Disable quota on a glusterfs volume.
+
+    name
+        Name of the gluster volume
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' glusterfs.disable_quota_volume <volume>
+    '''
+
+    cmd = 'volume quota {0} disable'.format(name)
+    if not _gluster(cmd):
+        return False
+    return True
+
+
+def set_quota_volume(name, path, size, enable_quota=False):
+    '''
+    Set quota to glusterfs volume.
+
+    name
+        Name of the gluster volume
+
+    path
+        Folder path for restriction in volume ("/")
+
+    size
+        Hard-limit size of the volume (MB/GB)
+
+    enable_quota
+        Enable quota before set up restriction
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' glusterfs.set_quota_volume <volume> <path> <size> enable_quota=True
+    '''
+    cmd = 'volume quota {0}'.format(name)
+    if path:
+        cmd += ' limit-usage {0}'.format(path)
+    if size:
+        cmd += ' {0}'.format(size)
+
+    if enable_quota:
+        if not enable_quota_volume(name):
+            pass
+    if not _gluster(cmd):
+        return False
+    return True
+
+
+def unset_quota_volume(name, path):
+    '''
+    Unset quota on glusterfs volume
+
+    name
+        Name of the gluster volume
+
+    path
+        Folder path for restriction in volume
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' glusterfs.unset_quota_volume <volume> <path>
+    '''
+    cmd = 'volume quota {0}'.format(name)
+    if path:
+        cmd += ' remove {0}'.format(path)
+
+    if not _gluster(cmd):
+        return False
+    return True
+
+
+def list_quota_volume(name):
+    '''
+    List quotas of glusterfs volume
+
+    name
+        Name of the gluster volume
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' glusterfs.list_quota_volume <volume>
+    '''
+    cmd = 'volume quota {0}'.format(name)
+    cmd += ' list'
+
+    root = _gluster_xml(cmd)
+    if not _gluster_ok(root):
+        return None
+
+    ret = {}
+    for limit in _iter(root, 'limit'):
+        path = limit.find('path').text
+        ret[path] = _etree_to_dict(limit)
+
+    return ret
+
+
+def get_op_version(name):
+    '''
+    .. versionadded:: 2019.2.0
+
+    Returns the glusterfs volume op-version
+
+    name
+        Name of the glusterfs volume
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' glusterfs.get_op_version <volume>
+    '''
+
+    cmd = 'volume get {0} cluster.op-version'.format(name)
+    root = _gluster_xml(cmd)
+
+    if not _gluster_ok(root):
+        return False, root.find('opErrstr').text
+
+    result = {}
+    for op_version in _iter(root, 'volGetopts'):
+        for item in op_version:
+            if item.tag == 'Value':
+                result = item.text
+            elif item.tag == 'Opt':
+                for child in item:
+                    if child.tag == 'Value':
+                        result = child.text
+
+    return result
+
+
+def get_max_op_version():
+    '''
+    .. versionadded:: 2019.2.0
+
+    Returns the glusterfs volume's max op-version value
+    Requires Glusterfs version > 3.9
+
+    CLI Example:
+    .. code-block:: bash
+
+        salt '*' glusterfs.get_max_op_version
+    '''
+    if _get_version() < (3, 10,):
+        return False, 'Glusterfs version must be 3.10+.  Your version is {0}.'.format(str('.'.join(str(i) for i in _get_version())))
+
+    cmd = 'volume get all cluster.max-op-version'
+    root = _gluster_xml(cmd)
+
+    if not _gluster_ok(root):
+        return False, root.find('opErrstr').text
+
+    result = {}
+    for max_op_version in _iter(root, 'volGetopts'):
+        for item in max_op_version:
+            if item.tag == 'Value':
+                result = item.text
+            elif item.tag == 'Opt':
+                for child in item:
+                    if child.tag == 'Value':
+                        result = child.text
+
+    return result
+
+
+def set_op_version(version):
+    '''
+    .. versionadded:: 2019.2.0
+
+    Set the glusterfs volume op-version
+
+    version
+        Version to set the glusterfs volume op-version
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' glusterfs.set_op_version <volume>
+    '''
+
+    cmd = 'volume set all cluster.op-version {0}'.format(version)
+    root = _gluster_xml(cmd)
+
+    if not _gluster_ok(root):
+        return False, root.find('opErrstr').text
+
+    return root.find('output').text
+
+
+def get_version():
+    '''
+    .. versionadded:: 2019.2.0
+
+    Returns the version of glusterfs.
+    CLI Example:
+    .. code-block:: bash
+
+        salt '*' glusterfs.get_version
+    '''
+
+    return '.'.join(_get_version())

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 '''
 Allows you to manage extended attributes on files or directories
-=======================
+================================================================
 
-Install, enable and disable assitive access on OS X minions
+Install, enable and disable assistive access on macOS minions
 
 .. code-block:: yaml
 
@@ -13,7 +13,7 @@ Install, enable and disable assitive access on OS X minions
             - com.file.attr=test
             - com.apple.quarantine=0x00001111
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals, print_function
 
 # Import python libs
 import logging
@@ -27,7 +27,7 @@ def __virtual__():
     '''
     Only work on Mac OS
     '''
-    if __grains__['os'] in ['MacOS', 'Darwin']:
+    if __grains__.get('os') in ['MacOS', 'Darwin']:
         return __virtualname__
     return False
 
@@ -42,7 +42,7 @@ def exists(name, attributes):
     attributes
         The attributes that should exist on the file/directory, this is accepted as
         an array, with key and value split with an equals sign, if you want to specify
-        a hex value then add 0x to the begining of the value.
+        a hex value then add 0x to the beginning of the value.
 
     '''
     ret = {'name': name,
@@ -79,7 +79,7 @@ def exists(name, attributes):
             ret['changes'][attr_id] = attr_val
             __salt__['xattr.write'](name, attr_id, attr_val, attr_hex)
 
-    if len(ret['changes'].keys()) == 0:
+    if not ret['changes']:
         ret['comment'] = 'All values existed correctly.'
 
     return ret
@@ -115,7 +115,7 @@ def delete(name, attributes):
             __salt__['xattr.delete'](name, attr)
             ret['changes'][attr] = 'delete'
 
-    if len(ret['changes'].keys()) == 0:
+    if not ret['changes']:
         ret['comment'] = 'All attributes were already deleted.'
 
     return ret

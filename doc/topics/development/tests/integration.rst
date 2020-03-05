@@ -82,9 +82,9 @@ test suite illustrating the broad usefulness of each function.
 
 The ``setUp`` function is used to set up any repetitive or useful tasks that the
 tests in a test class need before running. For example, any of the ``mac_*``
-integration tests should only run on OSX machines. The ``setUp`` function can be
-used to test for the presence of the ``Darwin`` kernel. If the ``Darwin`` kernel
-is not present, then the test should be skipped.
+integration tests should only run on macOS machines. The ``setUp`` function can
+be used to test for the presence of the ``Darwin`` kernel. If the ``Darwin``
+kernel is not present, then the test should be skipped.
 
 .. code-block:: python
 
@@ -204,8 +204,7 @@ would be passed on the command line.
 run_run_plus
 ~~~~~~~~~~~~
 
-Execute Salt run and the salt run function and return the data from
-each in a dict.
+Execute the runner function the and return the return data and output in a dict
 
 run_salt
 ~~~~~~~~
@@ -273,7 +272,7 @@ Now the workhorse method ``run_function`` can be used to test a module:
 .. code-block:: python
 
     import os
-    import integration
+    import tests.integration as integration
 
 
     class TestModuleTest(integration.ModuleCase):
@@ -313,7 +312,7 @@ Validating the shell commands can be done via shell tests:
     import shutil
     import tempfile
 
-    import integration
+    import tests.integration as integration
 
     class KeyTest(integration.ShellCase):
         '''
@@ -346,7 +345,7 @@ Testing salt-ssh functionality can be done using the SSHCase test class:
 
 .. code-block:: python
 
-    import integration
+    import tests.integration as integration
 
     class SSHGrainsTest(integration.SSHCase):
     '''
@@ -371,7 +370,8 @@ on a minion event bus.
 
 .. code-block:: python
 
-    import integration
+    import tests.integration as integration
+    import salt.utils.event
 
     class TestEvent(integration.SaltEventAssertsMixin):
         '''
@@ -393,7 +393,7 @@ Testing Salt's Syndic can be done via the SyndicCase test class:
 
 .. code-block:: python
 
-    import integration
+    import tests.integration as integration
 
     class TestSyndic(integration.SyndicCase):
         '''
@@ -433,19 +433,29 @@ to test states:
 
 .. code-block:: python
 
+    # Import python libs
+    from __future__ import absolute_import
     import os
     import shutil
-    import integration
 
-    HFILE = os.path.join(integration.TMP, 'hosts')
+    # Import Salt Testing libs
+    from tests.support.case import ModuleCase
+    from tests.support.paths import FILES, TMP
+    from tests.support.mixins import SaltReturnAssertsMixin
 
-    class HostTest(integration.ModuleCase):
+    # Import salt libs
+    import salt.utils.files
+
+    HFILE = os.path.join(TMP, 'hosts')
+
+
+    class HostTest(ModuleCase, SaltReturnAssertsMixin):
         '''
         Validate the host state
         '''
 
         def setUp(self):
-            shutil.copyfile(os.path.join(integration.FILES, 'hosts'), HFILE)
+            shutil.copyfile(os.path.join(FILES, 'hosts'), HFILE)
             super(HostTest, self).setUp()
 
         def tearDown(self):
@@ -460,18 +470,17 @@ to test states:
             name = 'spam.bacon'
             ip = '10.10.10.10'
             ret = self.run_state('host.present', name=name, ip=ip)
-            result = self.state_result(ret)
-            self.assertTrue(result)
-            with open(HFILE) as fp_:
+            self.assertSaltTrueReturn(ret)
+            with salt.utils.files.fopen(HFILE) as fp_:
                 output = fp_.read()
                 self.assertIn('{0}\t\t{1}'.format(ip, name), output)
 
-To access the integration files, a variable named ``integration.FILES``
-points to the ``tests/integration/files`` directory. This is where the referenced
+To access the integration files, a variable named ``FILES`` points to the 
+``tests/integration/files`` directory. This is where the referenced
 ``host.present`` sls file resides.
 
 In addition to the static files in the integration state tree, the location
-``integration.TMP`` can also be used to store temporary files that the test system
+``TMP`` can also be used to store temporary files that the test system
 will clean up when the execution finishes.
 
 
@@ -498,8 +507,8 @@ the test method:
 
 .. code-block:: python
 
-    import integration
-    from salttesting.helpers import destructiveTest
+    import tests.integration as integration
+    from tests.support.helpers import destructiveTest, skip_if_not_root
 
     class DestructiveExampleModuleTest(integration.ModuleCase):
         '''
@@ -507,7 +516,7 @@ the test method:
         '''
 
         @destructiveTest
-        @skipIf(os.geteuid() != 0, 'you must be root to run this test')
+        @skip_if_not_root
         def test_user_not_present(self):
             '''
             This is a DESTRUCTIVE TEST it creates a new user on the minion.
@@ -532,7 +541,7 @@ provider configuration file in the integration test file directory located at
 ``tests/integration/files/conf/cloud.*.d/``.
 
 The following is an example of the default profile configuration file for Digital
-Ocean, located at: ``tests/integration/files/conf/cloud.profiles.d/digital_ocean.conf``:
+Ocean, located at: ``tests/integration/files/conf/cloud.profiles.d/digitalocean.conf``:
 
 .. code-block:: yaml
 
@@ -548,12 +557,12 @@ be provided by the user by editing the provider configuration file before runnin
 tests.
 
 The following is an example of the default provider configuration file for Digital
-Ocean, located at: ``tests/integration/files/conf/cloud.providers.d/digital_ocean.conf``:
+Ocean, located at: ``tests/integration/files/conf/cloud.providers.d/digitalocean.conf``:
 
 .. code-block:: yaml
 
     digitalocean-config:
-      driver: digital_ocean
+      driver: digitalocean
       client_key: ''
       api_key: ''
       location: New York 1
@@ -564,7 +573,10 @@ contain valid information are also required in the test class's ``setUp`` functi
 
 .. code-block:: python
 
-    class LinodeTest(integration.ShellCase):
+    from tests.support.case import ShellCase
+    from tests.support.paths import FILES
+
+    class LinodeTest(ShellCase):
     '''
     Integration tests for the Linode cloud provider in Salt-Cloud
     '''
@@ -587,7 +599,7 @@ contain valid information are also required in the test class's ``setUp`` functi
             )
 
         # check if apikey and password are present
-        path = os.path.join(integration.FILES,
+        path = os.path.join(FILES,
                             'conf',
                             'cloud.providers.d',
                             provider + '.conf')
@@ -620,7 +632,7 @@ the test function:
 
 .. code-block:: python
 
-    from salttesting.helpers import expensiveTest
+    from tests.support.helpers import expensiveTest
 
     @expensiveTest
     def test_instance(self):

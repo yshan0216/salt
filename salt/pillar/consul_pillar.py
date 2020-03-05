@@ -20,6 +20,8 @@ configuration file:
 
 All parameters are optional.
 
+The ``consul.token`` requires python-consul >= 0.4.7.
+
 If you have a multi-datacenter Consul cluster you can map your ``pillarenv``s
 to your data centers by providing a dictionary of mappings in ``consul.dc``
 field:
@@ -70,7 +72,7 @@ Optionally, a root may be specified.
       - consul: my_consul_config
 
     ext_pillar:
-      - consul: my_consul_config root=/salt
+      - consul: my_consul_config root=salt
 
 Using these configuration profiles, multiple consul sources may also be used:
 
@@ -80,14 +82,15 @@ Using these configuration profiles, multiple consul sources may also be used:
       - consul: my_consul_config
       - consul: my_other_consul_config
 
-Either the ``minion_id``, or the ``role`` grain  may be used in the ``root``
+Either the ``minion_id``, or the ``role``, or the ``environment`` grain  may be used in the ``root``
 path to expose minion-specific information stored in consul.
 
 .. code-block:: yaml
 
     ext_pillar:
-      - consul: my_consul_config root=/salt/%(minion_id)s
-      - consul: my_consul_config root=/salt/%(role)s
+      - consul: my_consul_config root=salt/%(minion_id)s
+      - consul: my_consul_config root=salt/%(role)s
+      - consul: my_consul_config root=salt/%(environment)s
 
 Minion-specific values may override shared values when the minion-specific root
 appears after the shared root:
@@ -95,35 +98,61 @@ appears after the shared root:
 .. code-block:: yaml
 
     ext_pillar:
-      - consul: my_consul_config root=/salt-shared
-      - consul: my_other_consul_config root=/salt-private/%(minion_id)s
+      - consul: my_consul_config root=salt-shared
+      - consul: my_other_consul_config root=salt-private/%(minion_id)s
 
-If using the ``role`` grain in the consul key path, be sure to define it using
+If using the ``role`` or ``environment`` grain in the consul key path, be sure to define it using
 `/etc/salt/grains`, or similar:
 
 .. code-block:: yaml
 
     role: my-minion-role
+    environment: dev
+
+It's possible to lock down where the pillar values are shared through minion
+targeting. Note that double quotes ``"`` are required around the target value
+and cannot be used inside the matching statement. See the section on Compound
+Matchers for more examples.
+
+.. code-block:: yaml
+
+    ext_pillar:
+      - consul: my_consul_config root=salt target="L@salt.example.com and G@osarch:x86_64"
+
+The data from Consul can be merged into a nested key in Pillar.
+
+.. code-block:: yaml
+
+    ext_pillar:
+      - consul: my_consul_config pillar_root=consul_data
+
+By default, keys containing YAML data will be deserialized before being merged into Pillar.
+This behavior can be disabled by setting ``expand_keys`` to ``false``.
+
+.. code-block:: yaml
+
+    ext_pillar:
+      - consul: my_consul_config expand_keys=false
 
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function, unicode_literals
 
 # Import python libs
 import logging
-
 import re
-
-import yaml
 
 from salt.exceptions import CommandExecutionError
 from salt.utils.dictupdate import update as dict_merge
+import salt.utils.minions
+import salt.utils.yaml
 
 # Import third party libs
 try:
     import consul
-    HAS_CONSUL = True
+    if not hasattr(consul, '__version__'):
+        consul.__version__ = '0.1'  # Some packages has no version, and so this pillar crashes on access to it.
 except ImportError:
-    HAS_CONSUL = False
+    consul = None
 
 __virtualname__ = 'consul'
 
@@ -135,7 +164,7 @@ def __virtual__():
     '''
     Only return if python-consul is installed
     '''
-    return __virtualname__ if HAS_CONSUL else False
+    return __virtualname__ if consul is not None else False
 
 
 def ext_pillar(minion_id,
@@ -144,29 +173,82 @@ def ext_pillar(minion_id,
     '''
     Check consul for all data
     '''
-    comps = conf.split()
+    opts = {}
+    temp = conf
+    target_re = re.compile('target="(.*?)"')
+    match = target_re.search(temp)
+    if match:
+        opts['target'] = match.group(1)
+        temp = temp.replace(match.group(0), '')
+        checker = salt.utils.minions.CkMinions(__opts__)
+        _res = checker.check_minions(opts['target'], 'compound')
+        minions = _res['minions']
+        log.debug('Targeted minions: %r', minions)
+        if minion_id not in minions:
+            return {}
 
-    profile = None
-    if comps[0]:
-        profile = comps[0]
-    client = get_conn(__opts__, profile)
+    root_re = re.compile('(?<!_)root=(\S*)')  # pylint: disable=W1401
+    match = root_re.search(temp)
+    if match:
+        opts['root'] = match.group(1).rstrip('/')
+        temp = temp.replace(match.group(0), '')
+    else:
+        opts['root'] = ""
 
-    path = ''
-    if len(comps) > 1 and comps[1].startswith('root='):
-        path = comps[1].replace('root=', '')
+    pillar_root_re = re.compile('pillar_root=(\S*)')  # pylint: disable=W1401
+    match = pillar_root_re.search(temp)
+    if match:
+        opts['pillar_root'] = match.group(1).rstrip('/')
+        temp = temp.replace(match.group(0), '')
+    else:
+        opts['pillar_root'] = ""
 
-    role = __salt__['grains.get']('role')
+    profile_re = re.compile('(?:profile=)?(\S+)')  # pylint: disable=W1401
+    match = profile_re.search(temp)
+    if match:
+        opts['profile'] = match.group(1)
+        temp = temp.replace(match.group(0), '')
+    else:
+        opts['profile'] = None
+
+    expand_keys_re = re.compile('expand_keys=False', re.IGNORECASE)  # pylint: disable=W1401
+    match = expand_keys_re.search(temp)
+    if match:
+        opts['expand_keys'] = False
+        temp = temp.replace(match.group(0), '')
+    else:
+        opts['expand_keys'] = True
+
+    client = get_conn(__opts__, opts['profile'])
+
+    role = __salt__['grains.get']('role', None)
+    environment = __salt__['grains.get']('environment', None)
     # put the minion's ID in the path if necessary
-    path %= {
+    opts['root'] %= {
         'minion_id': minion_id,
-        'role': role
+        'role': role,
+        'environment': environment
     }
 
     try:
-        pillar = fetch_tree(client, path)
+        pillar_tree = fetch_tree(client, opts['root'], opts['expand_keys'])
+        if opts['pillar_root']:
+            log.debug('Merging consul path %s/ into pillar at %s/', opts['root'], opts['pillar_root'])
+
+            pillar = {}
+            branch = pillar
+            keys = opts['pillar_root'].split('/')
+
+            for i, k in enumerate(keys):
+                if i == len(keys) - 1:
+                    branch[k] = pillar_tree
+                else:
+                    branch[k] = {}
+                    branch = branch[k]
+        else:
+            pillar = pillar_tree
     except KeyError:
-        log.error('No such key in consul profile {0}: {1}'
-                  .format(profile, path))
+        log.error('No such key in consul profile %s: %s', opts['profile'], opts['root'])
         pillar = {}
 
     return pillar
@@ -176,36 +258,38 @@ def consul_fetch(client, path):
     '''
     Query consul for all keys/values within base path
     '''
-    return client.kv.get(path, recurse=True)
+    # Unless the root path is blank, it needs a trailing slash for
+    # the kv get from Consul to work as expected
+    return client.kv.get('' if not path else path.rstrip('/') + '/', recurse=True)
 
 
-def fetch_tree(client, path):
+def fetch_tree(client, path, expand_keys):
     '''
     Grab data from consul, trim base path and remove any keys which
     are folders. Take the remaining data and send it to be formatted
     in such a way as to be used as pillar data.
     '''
-    index, items = consul_fetch(client, path)
+    _, items = consul_fetch(client, path)
     ret = {}
     has_children = re.compile(r'/$')
 
-    log.debug('Fetched items: %r', format(items))
+    log.debug('Fetched items: %r', items)
 
     if items is None:
         return ret
     for item in reversed(items):
-        key = re.sub(r'^' + path + '/?', '', item['Key'])
-        if key != "":
-            log.debug('key/path - {0}: {1}'.format(path, key))
-            log.debug('has_children? %r', format(has_children.search(key)))
+        key = re.sub(r'^' + re.escape(path) + '/?', '', item['Key'])
+        if key != '':
+            log.debug('path/key - %s: %s', path, key)
+            log.debug('has_children? %r', has_children.search(key))
         if has_children.search(key) is None:
-            ret = pillar_format(ret, key.split('/'), item['Value'])
-            log.debug('Fetching subkeys for key: %r', format(item))
+            ret = pillar_format(ret, key.split('/'), item['Value'], expand_keys)
+            log.debug('Fetching subkeys for key: %r', item)
 
     return ret
 
 
-def pillar_format(ret, keys, value):
+def pillar_format(ret, keys, value, expand_keys):
     '''
     Perform data formatting to be used as pillar data and
     merge it with the current pillar data
@@ -215,9 +299,12 @@ def pillar_format(ret, keys, value):
         return ret
 
     # If value is not None then it's a string
-    # Use YAML to parse the data
     # YAML strips whitespaces unless they're surrounded by quotes
-    pillar_value = yaml.load(value)
+    # If expand_keys is true, deserialize the YAML data
+    if expand_keys:
+        pillar_value = salt.utils.yaml.safe_load(value)
+    else:
+        pillar_value = value
 
     keyvalue = keys.pop()
     pil = {keyvalue: pillar_value}
@@ -247,16 +334,18 @@ def get_conn(opts, profile):
         conf = opts_merged
 
     params = {}
-    for key in ('host', 'port', 'token', 'scheme', 'consistency', 'dc', 'verify'):
-        prefixed_key = 'consul.{key}'.format(key=key)
-        if prefixed_key in conf:
-            params[key] = conf[prefixed_key]
+    for key in conf:
+        if key.startswith('consul.'):
+            params[key.split('.')[1]] = conf[key]
 
     if 'dc' in params:
         pillarenv = opts_merged.get('pillarenv') or 'base'
         params['dc'] = _resolve_datacenter(params['dc'], pillarenv)
 
-    if HAS_CONSUL:
+    if consul:
+        # Sanity check. ACL Tokens are supported on python-consul 0.4.7 onwards only.
+        if consul.__version__ < '0.4.7' and params.get('target'):
+            params.pop('target')
         return consul.Consul(**params)
     else:
         raise CommandExecutionError(
@@ -279,20 +368,16 @@ def _resolve_datacenter(dc, pillarenv):
     If none patterns matched return ``None`` which meanse us datacenter of
     conencted Consul agent.
     '''
-    log.debug("Resolving Consul datacenter based on: {dc}".format(dc=dc))
+    log.debug('Resolving Consul datacenter based on: %s', dc)
 
     try:
         mappings = dc.items()  # is it a dict?
     except AttributeError:
-        log.debug('Using pre-defined DC: {dc!r}'.format(dc=dc))
+        log.debug('Using pre-defined DC: \'%s\'', dc)
         return dc
 
-    log.debug(
-        'Selecting DC based on pillarenv using {num} pattern(s)'.format(
-            num=len(mappings)
-        )
-    )
-    log.debug('Pillarenv set to {env!r}'.format(env=pillarenv))
+    log.debug('Selecting DC based on pillarenv using %d pattern(s)', len(mappings))
+    log.debug('Pillarenv set to \'%s\'', pillarenv)
 
     # sort in reverse based on pattern length
     # but use alphabetic order within groups of patterns of same length
@@ -301,13 +386,12 @@ def _resolve_datacenter(dc, pillarenv):
     for pattern, target in sorted_mappings:
         match = re.match(pattern, pillarenv)
         if match:
-            log.debug('Matched pattern: {pattern!r}'.format(pattern=pattern))
+            log.debug('Matched pattern: \'%s\'', pattern)
             result = target.format(**match.groupdict())
-            log.debug('Resolved datacenter: {result!r}'.format(result=result))
+            log.debug('Resolved datacenter: \'%s\'', result)
             return result
 
     log.debug(
-        'None of following patterns matched pillarenv={env}: {lst}'.format(
-            env=pillarenv, lst=', '.join(repr(x) for x in mappings)
-        )
+        'None of following patterns matched pillarenv=%s: %s',
+        pillarenv, ', '.join(repr(x) for x in mappings)
     )

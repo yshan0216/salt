@@ -5,7 +5,7 @@ correct cloud modules
 '''
 
 # Import python libs
-from __future__ import absolute_import, print_function, generators
+from __future__ import absolute_import, print_function, generators, unicode_literals
 import os
 import copy
 import glob
@@ -29,21 +29,28 @@ from salt.exceptions import (
 import salt.config
 import salt.client
 import salt.loader
-import salt.utils
+import salt.utils.args
 import salt.utils.cloud
+import salt.utils.context
+import salt.utils.crypt
+import salt.utils.data
+import salt.utils.dictupdate
+import salt.utils.files
+import salt.utils.verify
+import salt.utils.yaml
+import salt.utils.user
 import salt.syspaths
-from salt.utils import reinit_crypto
-from salt.utils import context
-from salt.ext.six import string_types
 from salt.template import compile_template
 
 # Import third party libs
 try:
-    import Crypto.Random
+    import Cryptodome.Random
 except ImportError:
-    pass  # pycrypto < 2.1
-import yaml
-import salt.ext.six as six
+    try:
+        import Crypto.Random
+    except ImportError:
+        pass  # pycrypto < 2.1
+from salt.ext import six
 from salt.ext.six.moves import input  # pylint: disable=import-error,redefined-builtin
 
 # Get logging started
@@ -68,6 +75,11 @@ def communicator(func):
             trace = traceback.format_exc()
             queue.put('ERROR')
             queue.put('Exception')
+            queue.put('{0}\n{1}\n'.format(ex, trace))
+        except SystemExit as ex:
+            trace = traceback.format_exc()
+            queue.put('ERROR')
+            queue.put('System exit')
             queue.put('{0}\n{1}\n'.format(ex, trace))
         return ret
     return _call
@@ -177,18 +189,18 @@ class CloudClient(object):
     def __init__(self, path=None, opts=None, config_dir=None, pillars=None):
         if opts:
             self.opts = opts
-        else:
+        elif path:
             self.opts = salt.config.cloud_config(path)
+        else:
+            self.opts = salt.config.cloud_config()
+
+        # Check the cache-dir exists. If not, create it.
+        v_dirs = [self.opts['cachedir']]
+        salt.utils.verify.verify_env(v_dirs, salt.utils.user.get_user())
 
         if pillars:
             for name, provider in six.iteritems(pillars.pop('providers', {})):
-                # Since using "provider: <provider-engine>" is deprecated, alias provider
-                # to use driver: "driver: <provider-engine>"
-                if 'provider' in provider:
-                    driver = provider.pop('provider')
-                else:
-                    driver = provider['driver']
-
+                driver = provider['driver']
                 provider['profiles'] = {}
                 self.opts['providers'].update({name: {driver: provider}})
             for name, profile in six.iteritems(pillars.pop('profiles', {})):
@@ -198,6 +210,10 @@ class CloudClient(object):
                 profile['profile'] = name
                 self.opts['profiles'].update({name: profile})
                 self.opts['providers'][provider][driver]['profiles'].update({name: profile})
+            for name, map_dct in six.iteritems(pillars.pop('maps', {})):
+                if 'maps' not in self.opts:
+                    self.opts['maps'] = {}
+                self.opts['maps'][name] = map_dct
             self.opts.update(pillars)
 
     def _opts_defaults(self, **kwargs):
@@ -206,7 +222,7 @@ class CloudClient(object):
         the kwargs
         '''
         # Let's start with the default salt cloud configuration
-        opts = salt.config.CLOUD_CONFIG_DEFAULTS.copy()
+        opts = salt.config.DEFAULT_CLOUD_OPTS.copy()
         # Update it with the loaded configuration
         opts.update(self.opts.copy())
         # Reset some of the settings to sane values
@@ -223,18 +239,19 @@ class CloudClient(object):
         profile = opts.get('profile', None)
         # filter other profiles if one is specified
         if profile:
-            for _profile in [a for a in opts.get('profiles', {})]:
+            tmp_profiles = opts.get('profiles', {}).copy()
+            for _profile in [a for a in tmp_profiles]:
                 if not _profile == profile:
-                    opts['profiles'].pop(_profile)
+                    tmp_profiles.pop(_profile)
             # if profile is specified and we have enough info about providers
             # also filter them to speedup methods like
             # __filter_non_working_providers
             providers = [a.get('provider', '').split(':')[0]
-                         for a in six.itervalues(opts['profiles'])
+                         for a in six.itervalues(tmp_profiles)
                          if a.get('provider', '')]
             if providers:
                 _providers = opts.get('providers', {})
-                for provider in _providers.keys():
+                for provider in _providers.copy():
                     if provider not in providers:
                         _providers.pop(provider)
         return opts
@@ -244,7 +261,7 @@ class CloudClient(object):
         Pass the cloud function and low data structure to run
         '''
         l_fun = getattr(self, fun)
-        f_call = salt.utils.format_call(l_fun, low)
+        f_call = salt.utils.args.format_call(l_fun, low)
         return l_fun(*f_call.get('args', ()), **f_call.get('kwargs', {}))
 
     def list_sizes(self, provider=None):
@@ -252,7 +269,7 @@ class CloudClient(object):
         List all available sizes in configured cloud systems
         '''
         mapper = salt.cloud.Map(self._opts_defaults())
-        return salt.utils.cloud.simple_types_filter(
+        return salt.utils.data.simple_types_filter(
             mapper.size_list(provider)
         )
 
@@ -261,7 +278,7 @@ class CloudClient(object):
         List all available images in configured cloud systems
         '''
         mapper = salt.cloud.Map(self._opts_defaults())
-        return salt.utils.cloud.simple_types_filter(
+        return salt.utils.data.simple_types_filter(
             mapper.image_list(provider)
         )
 
@@ -270,7 +287,7 @@ class CloudClient(object):
         List all available locations in configured cloud systems
         '''
         mapper = salt.cloud.Map(self._opts_defaults())
-        return salt.utils.cloud.simple_types_filter(
+        return salt.utils.data.simple_types_filter(
             mapper.location_list(provider)
         )
 
@@ -319,22 +336,22 @@ class CloudClient(object):
 
             >>> client= salt.cloud.CloudClient(path='/etc/salt/cloud')
             >>> client.profile('do_512_git', names=['minion01',])
-            {'minion01': {u'backups_active': 'False',
-                    u'created_at': '2014-09-04T18:10:15Z',
-                    u'droplet': {u'event_id': 31000502,
-                                 u'id': 2530006,
-                                 u'image_id': 5140006,
-                                 u'name': u'minion01',
-                                 u'size_id': 66},
-                    u'id': '2530006',
-                    u'image_id': '5140006',
-                    u'ip_address': '107.XXX.XXX.XXX',
-                    u'locked': 'True',
-                    u'name': 'minion01',
-                    u'private_ip_address': None,
-                    u'region_id': '4',
-                    u'size_id': '66',
-                    u'status': 'new'}}
+            {'minion01': {'backups_active': 'False',
+                    'created_at': '2014-09-04T18:10:15Z',
+                    'droplet': {'event_id': 31000502,
+                                 'id': 2530006,
+                                 'image_id': 5140006,
+                                 'name': 'minion01',
+                                 'size_id': 66},
+                    'id': '2530006',
+                    'image_id': '5140006',
+                    'ip_address': '107.XXX.XXX.XXX',
+                    'locked': 'True',
+                    'name': 'minion01',
+                    'private_ip_address': None,
+                    'region_id': '4',
+                    'size_id': '66',
+                    'status': 'new'}}
 
 
         '''
@@ -342,21 +359,23 @@ class CloudClient(object):
             vm_overrides = {}
         kwargs['profile'] = profile
         mapper = salt.cloud.Map(self._opts_defaults(**kwargs))
-        if isinstance(names, str):
+        if isinstance(names, six.string_types):
             names = names.split(',')
-        return salt.utils.cloud.simple_types_filter(
+        return salt.utils.data.simple_types_filter(
             mapper.run_profile(profile, names, vm_overrides=vm_overrides)
         )
 
-    def map_run(self, path, **kwargs):
+    def map_run(self, path=None, **kwargs):
         '''
-        Pass in a location for a map to execute
+        To execute a map
         '''
-        kwarg = {'map': path}
+        kwarg = {}
+        if path:
+            kwarg['map'] = path
         kwarg.update(kwargs)
         mapper = salt.cloud.Map(self._opts_defaults(**kwarg))
         dmap = mapper.map_data()
-        return salt.utils.cloud.simple_types_filter(
+        return salt.utils.data.simple_types_filter(
             mapper.run_map(dmap)
         )
 
@@ -365,9 +384,9 @@ class CloudClient(object):
         Destroy the named VMs
         '''
         mapper = salt.cloud.Map(self._opts_defaults(destroy=True))
-        if isinstance(names, str):
+        if isinstance(names, six.string_types):
             names = names.split(',')
-        return salt.utils.cloud.simple_types_filter(
+        return salt.utils.data.simple_types_filter(
             mapper.destroy(names)
         )
 
@@ -379,10 +398,9 @@ class CloudClient(object):
 
         .. code-block:: python
 
-            client.create(names=['myinstance'], provider='my-ec2-config',
-                kwargs={'image': 'ami-1624987f', 'size': 't1.micro',
-                        'ssh_username': 'ec2-user', 'securitygroup': 'default',
-                        'delvol_on_destroy': True})
+            client.create(provider='my-ec2-config', names=['myinstance'],
+                image='ami-1624987f', size='t1.micro', ssh_username='ec2-user',
+                securitygroup='default', delvol_on_destroy=True)
         '''
         mapper = salt.cloud.Map(self._opts_defaults())
         providers = self.opts['providers']
@@ -390,21 +408,24 @@ class CloudClient(object):
             provider += ':{0}'.format(next(six.iterkeys(providers[provider])))
         else:
             return False
-        if isinstance(names, str):
+        if isinstance(names, six.string_types):
             names = names.split(',')
         ret = {}
         for name in names:
             vm_ = kwargs.copy()
-
-            # Since using "provider: <provider-engine>" is deprecated, alias provider
-            # to use driver: "driver: <provider-engine>"
-            if 'provider' in vm_:
-                vm_['driver'] = vm_.pop('provider')
-
             vm_['name'] = name
             vm_['driver'] = provider
+
+            # This function doesn't require a profile, but many cloud drivers
+            # check for profile information (which includes the provider key) to
+            # help with config file debugging and setting up instances. Setting
+            # the profile and provider defaults here avoids errors in other
+            # cloud functions relying on these keys. See SaltStack Issue #41971
+            # and PR #38166 for more information.
             vm_['profile'] = None
-            ret[name] = salt.utils.cloud.simple_types_filter(
+            vm_['provider'] = provider
+
+            ret[name] = salt.utils.data.simple_types_filter(
                 mapper.create(vm_))
         return ret
 
@@ -429,7 +450,7 @@ class CloudClient(object):
             provider += ':{0}'.format(next(six.iterkeys(providers[provider])))
         else:
             return False
-        if isinstance(names, str):
+        if isinstance(names, six.string_types):
             names = names.split(',')
 
         ret = {}
@@ -439,7 +460,7 @@ class CloudClient(object):
             extra_['provider'] = provider
             extra_['profile'] = None
             extra_['action'] = action
-            ret[name] = salt.utils.cloud.simple_types_filter(
+            ret[name] = salt.utils.data.simple_types_filter(
                 mapper.extras(extra_)
             )
         return ret
@@ -465,6 +486,9 @@ class CloudClient(object):
                 kwargs={'image': 'ami-10314d79'}
             )
         '''
+        if kwargs is None:
+            kwargs = {}
+
         mapper = salt.cloud.Map(self._opts_defaults(
             action=fun,
             names=names,
@@ -500,6 +524,7 @@ class Cloud(object):
     '''
     def __init__(self, opts):
         self.opts = opts
+        self.client = CloudClient(opts=self.opts)
         self.clouds = salt.loader.clouds(self.opts)
         self.__filter_non_working_providers()
         self.__cached_provider_queries = {}
@@ -608,27 +633,21 @@ class Cloud(object):
             for driver, details in six.iteritems(drivers):
                 fun = '{0}.{1}'.format(driver, query)
                 if fun not in self.clouds:
-                    log.error(
-                        'Public cloud provider {0} is not available'.format(
-                            driver
-                        )
-                    )
+                    log.error('Public cloud provider %s is not available', driver)
                     continue
                 if alias not in pmap:
                     pmap[alias] = {}
 
                 try:
-                    with context.func_globals_inject(
+                    with salt.utils.context.func_globals_inject(
                         self.clouds[fun],
                         __active_provider_name__=':'.join([alias, driver])
                     ):
                         pmap[alias][driver] = self.clouds[fun]()
                 except Exception as err:
                     log.debug(
-                        'Failed to execute \'{0}()\' while querying for '
-                        'running nodes: {1}'.format(fun, err),
-                        # Show the traceback if the debug logging level is
-                        # enabled
+                        'Failed to execute \'%s()\' while querying for '
+                        'running nodes: %s', fun, err,
                         exc_info_on_loglevel=logging.DEBUG
                     )
                     # Failed to communicate with the provider, don't list any
@@ -659,16 +678,12 @@ class Cloud(object):
                 # If driver has function list_nodes_min, just replace it
                 # with query param to check existing vms on this driver
                 # for minimum information, Otherwise still use query param.
-                if 'selected_query_option' not in opts and '{0}.list_nodes_min'.format(driver) in self.clouds:
+                if opts.get('selected_query_option') is None and '{0}.list_nodes_min'.format(driver) in self.clouds:
                     this_query = 'list_nodes_min'
 
                 fun = '{0}.{1}'.format(driver, this_query)
                 if fun not in self.clouds:
-                    log.error(
-                        'Public cloud provider {0} is not available'.format(
-                            driver
-                        )
-                    )
+                    log.error('Public cloud provider %s is not available', driver)
                     continue
 
                 multiprocessing_data.append({
@@ -701,7 +716,7 @@ class Cloud(object):
 
     def get_running_by_names(self, names, query='list_nodes', cached=False,
                              profile=None):
-        if isinstance(names, string_types):
+        if isinstance(names, six.string_types):
             names = [names]
 
         matches = {}
@@ -723,18 +738,9 @@ class Cloud(object):
                     continue
 
                 for vm_name, details in six.iteritems(vms):
-                    # If VM was created with use_fqdn with either of the softlayer drivers,
-                    # we need to strip the VM name and only search for the short hostname.
-                    if driver == 'softlayer' or driver == 'softlayer_hw':
-                        ret = []
-                        for name in names:
-                            name = name.split('.')[0]
-                            ret.append(name)
-                        if vm_name not in ret:
-                            continue
                     # XXX: The logic below can be removed once the aws driver
                     # is removed
-                    elif vm_name not in names:
+                    if vm_name not in names:
                         continue
 
                     elif driver == 'ec2' and 'aws' in handled_drivers and \
@@ -771,11 +777,7 @@ class Cloud(object):
         for driver, providers_data in six.iteritems(provider_by_driver):
             fun = '{0}.optimize_providers'.format(driver)
             if fun not in self.clouds:
-                log.debug(
-                    'The \'{0}\' cloud driver is unable to be optimized.'.format(
-                        driver
-                    )
-                )
+                log.debug('The \'%s\' cloud driver is unable to be optimized.', driver)
 
                 for name, prov_data in six.iteritems(providers_data):
                     if name not in new_providers:
@@ -808,10 +810,9 @@ class Cloud(object):
                 # The capability to gather locations is not supported by this
                 # cloud module
                 log.debug(
-                    'The \'{0}\' cloud driver defined under \'{1}\' provider '
-                    'alias is unable to get the locations information'.format(
-                        driver, alias
-                    )
+                    'The \'%s\' cloud driver defined under \'%s\' provider '
+                    'alias is unable to get the locations information',
+                    driver, alias
                 )
                 continue
 
@@ -820,18 +821,15 @@ class Cloud(object):
 
             try:
 
-                with context.func_globals_inject(
+                with salt.utils.context.func_globals_inject(
                     self.clouds[fun],
                     __active_provider_name__=':'.join([alias, driver])
                 ):
                     data[alias][driver] = self.clouds[fun]()
             except Exception as err:
                 log.error(
-                    'Failed to get the output of \'{0}()\': {1}'.format(
-                        fun, err
-                    ),
-                    # Show the traceback if the debug logging level is enabled
-                    exc_info_on_loglevel=logging.DEBUG
+                    'Failed to get the output of \'%s()\': %s',
+                    fun, err, exc_info_on_loglevel=logging.DEBUG
                 )
         return data
 
@@ -851,11 +849,9 @@ class Cloud(object):
                 # The capability to gather images is not supported by this
                 # cloud module
                 log.debug(
-                    'The \'{0}\' cloud driver defined under \'{1}\' provider '
-                    'alias is unable to get the images information'.format(
-                        driver,
-                        alias
-                    )
+                    'The \'%s\' cloud driver defined under \'%s\' provider '
+                    'alias is unable to get the images information',
+                    driver, alias
                 )
                 continue
 
@@ -863,18 +859,15 @@ class Cloud(object):
                 data[alias] = {}
 
             try:
-                with context.func_globals_inject(
+                with salt.utils.context.func_globals_inject(
                     self.clouds[fun],
                     __active_provider_name__=':'.join([alias, driver])
                 ):
                     data[alias][driver] = self.clouds[fun]()
             except Exception as err:
                 log.error(
-                    'Failed to get the output of \'{0}()\': {1}'.format(
-                        fun, err
-                    ),
-                    # Show the traceback if the debug logging level is enabled
-                    exc_info_on_loglevel=logging.DEBUG
+                    'Failed to get the output of \'%s()\': %s',
+                    fun, err, exc_info_on_loglevel=logging.DEBUG
                 )
         return data
 
@@ -894,11 +887,9 @@ class Cloud(object):
                 # The capability to gather sizes is not supported by this
                 # cloud module
                 log.debug(
-                    'The \'{0}\' cloud driver defined under \'{1}\' provider '
-                    'alias is unable to get the sizes information'.format(
-                        driver,
-                        alias
-                    )
+                    'The \'%s\' cloud driver defined under \'%s\' provider '
+                    'alias is unable to get the sizes information',
+                    driver, alias
                 )
                 continue
 
@@ -906,18 +897,15 @@ class Cloud(object):
                 data[alias] = {}
 
             try:
-                with context.func_globals_inject(
+                with salt.utils.context.func_globals_inject(
                     self.clouds[fun],
                     __active_provider_name__=':'.join([alias, driver])
                 ):
                     data[alias][driver] = self.clouds[fun]()
             except Exception as err:
                 log.error(
-                    'Failed to get the output of \'{0}()\': {1}'.format(
-                        fun, err
-                    ),
-                    # Show the traceback if the debug logging level is enabled
-                    exc_info_on_loglevel=logging.DEBUG
+                    'Failed to get the output of \'%s()\': %s',
+                    fun, err, exc_info_on_loglevel=logging.DEBUG
                 )
         return data
 
@@ -990,7 +978,7 @@ class Cloud(object):
                             })
 
         # destroying in parallel
-        if self.opts['parallel'] and len(parallel_data) > 0:
+        if self.opts['parallel'] and parallel_data:
             # set the pool size based on configuration or default to
             # the number of machines we're destroying
             if 'pool_size' in self.opts:
@@ -998,7 +986,7 @@ class Cloud(object):
             else:
                 pool_size = len(parallel_data)
             log.info('Destroying in parallel mode; '
-                     'Cloud pool size: {0}'.format(pool_size))
+                     'Cloud pool size: %s', pool_size)
 
             # kick off the parallel destroy
             output_multip = enter_mainloop(
@@ -1028,7 +1016,7 @@ class Cloud(object):
             log.info('Destroying in non-parallel mode.')
             for alias, driver, name in vms_to_destroy:
                 fun = '{0}.destroy'.format(driver)
-                with context.func_globals_inject(
+                with salt.utils.context.func_globals_inject(
                     self.clouds[fun],
                     __active_provider_name__=':'.join([alias, driver])
                 ):
@@ -1052,7 +1040,8 @@ class Cloud(object):
             vm_ = {
                 'name': name,
                 'profile': None,
-                'provider': ':'.join([alias, driver])
+                'provider': ':'.join([alias, driver]),
+                'driver': driver
             }
             minion_dict = salt.config.get_cloud_config_value(
                 'minion', vm_, self.opts, default={}
@@ -1179,20 +1168,13 @@ class Cloud(object):
             'minion', vm_, self.opts, default={}
         )
 
-        # Since using "provider: <provider-engine>" is deprecated, alias provider
-        # to use driver: "driver: <provider-engine>"
-        if 'provider' in vm_:
-            vm_['driver'] = vm_.pop('provider')
-
-        alias, driver = vm_['driver'].split(':')
+        alias, driver = vm_['provider'].split(':')
         fun = '{0}.create'.format(driver)
         if fun not in self.clouds:
             log.error(
-                'Creating \'{0[name]}\' using \'{0[provider]}\' as the provider '
-                'cannot complete since \'{1}\' is not available'.format(
-                    vm_,
-                    driver
-                )
+                'Creating \'%s\' using \'%s\' as the provider '
+                'cannot complete since \'%s\' is not available',
+                vm_['name'], vm_['provider'], driver
             )
             return
 
@@ -1206,13 +1188,12 @@ class Cloud(object):
         if deploy:
             if not make_master and 'master' not in minion_dict:
                 log.warning(
-                    'There\'s no master defined on the {0!r} VM settings.'.format(
-                        vm_['name']
-                    )
+                    'There\'s no master defined on the \'%s\' VM settings.',
+                    vm_['name']
                 )
 
             if 'pub_key' not in vm_ and 'priv_key' not in vm_:
-                log.debug('Generating minion keys for \'{0[name]}\''.format(vm_))
+                log.debug('Generating minion keys for \'%s\'', vm_['name'])
                 priv, pub = salt.utils.cloud.gen_keys(
                     salt.config.get_cloud_config_value(
                         'keysize',
@@ -1238,11 +1219,7 @@ class Cloud(object):
             key_id = '.'.join([key_id, minion_dict['append_domain']])
 
         if make_master is True and 'master_pub' not in vm_ and 'master_pem' not in vm_:
-            log.debug(
-                'Generating the master keys for \'{0[name]}\''.format(
-                    vm_
-                )
-            )
+            log.debug('Generating the master keys for \'%s\'', vm_['name'])
             master_priv, master_pub = salt.utils.cloud.gen_keys(
                 salt.config.get_cloud_config_value(
                     'keysize',
@@ -1275,9 +1252,9 @@ class Cloud(object):
             pass
 
         try:
-            alias, driver = vm_['driver'].split(':')
+            alias, driver = vm_['provider'].split(':')
             func = '{0}.create'.format(driver)
-            with context.func_globals_inject(
+            with salt.utils.context.func_globals_inject(
                 self.clouds[fun],
                 __active_provider_name__=':'.join([alias, driver])
             ):
@@ -1288,35 +1265,38 @@ class Cloud(object):
                     log.error('Bad option for sync_after_install')
                     return output
 
-                # a small pause makes the sync work reliably
+                # A small pause helps the sync work more reliably
                 time.sleep(3)
 
-                mopts_ = salt.config.DEFAULT_MINION_OPTS
-                conf_path = '/'.join(self.opts['conf_file'].split('/')[:-1])
-                mopts_.update(
-                    salt.config.minion_config(
-                        os.path.join(conf_path,
-                                     'minion')
+                start = int(time.time())
+                while int(time.time()) < start + 60:
+                    # We'll try every <timeout> seconds, up to a minute
+                    mopts_ = salt.config.DEFAULT_MASTER_OPTS
+                    conf_path = '/'.join(self.opts['conf_file'].split('/')[:-1])
+                    mopts_.update(
+                        salt.config.master_config(
+                            os.path.join(conf_path,
+                                         'master')
+                        )
                     )
-                )
 
-                client = salt.client.get_local_client(mopts=self.opts)
+                    client = salt.client.get_local_client(mopts=mopts_)
 
-                ret = client.cmd(
-                    vm_['name'],
-                    'saltutil.sync_{0}'.format(self.opts['sync_after_install']),
-                    timeout=self.opts['timeout']
-                )
-                log.info(
-                    six.u('Synchronized the following dynamic modules: '
-                          '  {0}').format(ret)
-                )
+                    ret = client.cmd(
+                        vm_['name'],
+                        'saltutil.sync_{0}'.format(self.opts['sync_after_install']),
+                        timeout=self.opts['timeout']
+                    )
+                    if ret:
+                        log.info(
+                            six.u('Synchronized the following dynamic modules: '
+                                  '  {0}').format(ret)
+                        )
+                        break
         except KeyError as exc:
             log.exception(
-                'Failed to create VM {0}. Configuration value {1} needs '
-                'to be set'.format(
-                    vm_['name'], exc
-                )
+                'Failed to create VM %s. Configuration value %s needs '
+                'to be set', vm_['name'], exc
             )
         # If it's a map then we need to respect the 'requires'
         # so we do it later
@@ -1325,11 +1305,7 @@ class Cloud(object):
         except KeyError:
             opt_map = False
         if self.opts['parallel'] and self.opts['start_action'] and not opt_map:
-            log.info(
-                'Running {0} on {1}'.format(
-                    self.opts['start_action'], vm_['name']
-                )
-            )
+            log.info('Running %s on %s', self.opts['start_action'], vm_['name'])
             client = salt.client.get_local_client(mopts=self.opts)
             action_out = client.cmd(
                 vm_['name'],
@@ -1338,6 +1314,24 @@ class Cloud(object):
             )
             output['ret'] = action_out
         return output
+
+    @staticmethod
+    def vm_config(name, main, provider, profile, overrides):
+        '''
+        Create vm config.
+
+        :param str name: The name of the vm
+        :param dict main: The main cloud config
+        :param dict provider: The provider config
+        :param dict profile: The profile config
+        :param dict overrides: The vm's config overrides
+        '''
+        vm = main.copy()
+        vm = salt.utils.dictupdate.update(vm, provider)
+        vm = salt.utils.dictupdate.update(vm, profile)
+        vm.update(overrides)
+        vm['name'] = name
+        return vm
 
     def extras(self, extra_):
         '''
@@ -1349,27 +1343,23 @@ class Cloud(object):
         fun = '{0}.{1}'.format(driver, extra_['action'])
         if fun not in self.clouds:
             log.error(
-                'Creating \'{0[name]}\' using \'{0[provider]}\' as the provider '
-                'cannot complete since \'{1}\' is not available'.format(
-                    extra_,
-                    driver
-                )
+                'Creating \'%s\' using \'%s\' as the provider '
+                'cannot complete since \'%s\' is not available',
+                extra_['name'], extra_['provider'], driver
             )
             return
 
         try:
-            with context.func_globals_inject(
+            with salt.utils.context.func_globals_inject(
                 self.clouds[fun],
                 __active_provider_name__=extra_['provider']
             ):
                 output = self.clouds[fun](**extra_)
         except KeyError as exc:
             log.exception(
-                (
-                    'Failed to perform {0[provider]}.{0[action]} '
-                    'on {0[name]}. '
-                    'Configuration value {1} needs to be set'
-                ).format(extra_, exc)
+                'Failed to perform %s.%s on %s. '
+                'Configuration value %s needs to be set',
+                extra_['provider'], extra_['action'], extra_['name'], exc
             )
         return output
 
@@ -1388,8 +1378,8 @@ class Cloud(object):
             vm_overrides = {}
 
         try:
-            with salt.utils.fopen(self.opts['conf_file'], 'r') as mcc:
-                main_cloud_config = yaml.safe_load(mcc)
+            with salt.utils.files.fopen(self.opts['conf_file'], 'r') as mcc:
+                main_cloud_config = salt.utils.yaml.safe_load(mcc)
             if not main_cloud_config:
                 main_cloud_config = {}
         except KeyError:
@@ -1403,8 +1393,8 @@ class Cloud(object):
         mapped_providers = self.map_providers_parallel()
         profile_details = self.opts['profiles'][profile]
         vms = {}
-        for prov in mapped_providers:
-            prov_name = mapped_providers[prov].keys()[0]
+        for prov, val in six.iteritems(mapped_providers):
+            prov_name = next(iter(val))
             for node in mapped_providers[prov][prov_name]:
                 vms[node] = mapped_providers[prov][prov_name][node]
                 vms[node]['provider'] = prov
@@ -1418,19 +1408,20 @@ class Cloud(object):
             if name in vms:
                 prov = vms[name]['provider']
                 driv = vms[name]['driver']
-                msg = six.u('{0} already exists under {1}:{2}').format(
+                msg = '{0} already exists under {1}:{2}'.format(
                     name, prov, driv
                 )
                 log.error(msg)
                 ret[name] = {'Error': msg}
                 continue
 
-            vm_ = main_cloud_config.copy()
-            vm_.update(provider_details)
-            vm_.update(profile_details)
-            vm_.update(vm_overrides)
-
-            vm_['name'] = name
+            vm_ = self.vm_config(
+                name,
+                main_cloud_config,
+                provider_details,
+                profile_details,
+                vm_overrides,
+            )
             if self.opts['parallel']:
                 process = multiprocessing.Process(
                     target=self.create,
@@ -1478,11 +1469,7 @@ class Cloud(object):
                 valid_function = True
                 fun = '{0}.{1}'.format(driver, self.opts['action'])
                 if fun not in self.clouds:
-                    log.info(
-                        '\'{0}()\' is not available. Not actioning...'.format(
-                            fun
-                        )
-                    )
+                    log.info('\'%s()\' is not available. Not actioning...', fun)
                     valid_function = False
                 for vm_name, vm_details in six.iteritems(vms):
                     if not names:
@@ -1494,8 +1481,8 @@ class Cloud(object):
                             vm_name = vm_details['id']
                         else:
                             log.debug(
-                                'vm:{0} in provider:{1} is not in name '
-                                'list:\'{2}\''.format(vm_name, driver, names)
+                                'vm:%s in provider:%s is not in name '
+                                'list:\'%s\'', vm_name, driver, names
                             )
                             continue
 
@@ -1506,7 +1493,7 @@ class Cloud(object):
                         invalid_functions[fun].append(vm_name)
                         continue
 
-                    with context.func_globals_inject(
+                    with salt.utils.context.func_globals_inject(
                         self.clouds[fun],
                         __active_provider_name__=':'.join([alias, driver])
                     ):
@@ -1514,6 +1501,11 @@ class Cloud(object):
                             ret[alias] = {}
                         if driver not in ret[alias]:
                             ret[alias][driver] = {}
+
+                        # Clean kwargs of "__pub_*" data before running the cloud action call.
+                        # Prevents calling positional "kwarg" arg before "call" when no kwarg
+                        # argument is present in the cloud driver function's arg spec.
+                        kwargs = salt.utils.args.clean_kwargs(**kwargs)
 
                         if kwargs:
                             ret[alias][driver][vm_name] = self.clouds[fun](
@@ -1580,12 +1572,11 @@ class Cloud(object):
             )
 
         log.debug(
-            'Trying to execute \'{0}\' with the following kwargs: {1}'.format(
-                fun, kwargs
-            )
+            'Trying to execute \'%s\' with the following kwargs: %s',
+            fun, kwargs
         )
 
-        with context.func_globals_inject(
+        with salt.utils.context.func_globals_inject(
             self.clouds[fun],
             __active_provider_name__=':'.join([alias, driver])
         ):
@@ -1613,16 +1604,15 @@ class Cloud(object):
                 if fun not in self.clouds:
                     # Mis-configured provider that got removed?
                     log.warning(
-                        'The cloud driver, \'{0}\', configured under the '
-                        '\'{1}\' cloud provider alias, could not be loaded. '
+                        'The cloud driver, \'%s\', configured under the '
+                        '\'%s\' cloud provider alias, could not be loaded. '
                         'Please check your provider configuration files and '
                         'ensure all required dependencies are installed '
-                        'for the \'{0}\' driver.\n'
-                        'In rare cases, this could indicate the \'{2}()\' '
-                        'function could not be found.\nRemoving \'{0}\' from '
-                        'the available providers list'.format(
-                            driver, alias, fun
-                        )
+                        'for the \'%s\' driver.\n'
+                        'In rare cases, this could indicate the \'%s()\' '
+                        'function could not be found.\nRemoving \'%s\' from '
+                        'the available providers list',
+                        driver, alias, driver, fun, driver
                     )
                     self.opts['providers'][alias].pop(driver)
 
@@ -1633,16 +1623,16 @@ class Cloud(object):
                         self.opts['providers'].pop(alias)
                     continue
 
-                with context.func_globals_inject(
+                with salt.utils.context.func_globals_inject(
                     self.clouds[fun],
                     __active_provider_name__=':'.join([alias, driver])
                 ):
                     if self.clouds[fun]() is False:
                         log.warning(
-                            'The cloud driver, \'{0}\', configured under the '
-                            '\'{1}\' cloud provider alias is not properly '
+                            'The cloud driver, \'%s\', configured under the '
+                            '\'%s\' cloud provider alias is not properly '
                             'configured. Removing it from the available '
-                            'providers list.'.format(driver, alias)
+                            'providers list.', driver, alias
                         )
                         self.opts['providers'][alias].pop(driver)
 
@@ -1740,8 +1730,9 @@ class Map(Cloud):
                         state_action = matching_states[action]
                     except KeyError:
                         log.error(
-                            'The use of \'{0}\' as an action is not supported in this context. '
-                            'Only \'start\', \'stop\', and \'reboot\' are supported options.'.format(action)
+                            'The use of \'%s\' as an action is not supported '
+                            'in this context. Only \'start\', \'stop\', and '
+                            '\'reboot\' are supported options.', action
                         )
                         raise SaltCloudException()
                     if vm_details != 'Absent' and vm_details['state'].lower() in state_action:
@@ -1750,54 +1741,72 @@ class Map(Cloud):
 
     def read(self):
         '''
-        Read in the specified map file and return the map structure
+        Read in the specified map and return the map structure
         '''
+        map_ = None
         if self.opts.get('map', None) is None:
-            return {}
-
-        local_minion_opts = copy.deepcopy(self.opts)
-        local_minion_opts['file_client'] = 'local'
-        self.minion = salt.minion.MasterMinion(local_minion_opts)
-
-        if not os.path.isfile(self.opts['map']):
-            if not (self.opts['map']).startswith('salt://'):
-                log.error(
-                    'The specified map file does not exist: \'{0}\''.format(
-                        self.opts['map'])
-                )
-                raise SaltCloudNotFound()
-        if (self.opts['map']).startswith('salt://'):
-            cached_map = self.minion.functions['cp.cache_file'](self.opts['map'])
+            if self.opts.get('map_data', None) is None:
+                if self.opts.get('map_pillar', None) is None:
+                    pass
+                elif self.opts.get('map_pillar') not in self.opts.get('maps'):
+                    log.error(
+                        'The specified map not found in pillar at '
+                        '\'cloud:maps:%s\'', self.opts['map_pillar']
+                    )
+                    raise SaltCloudNotFound()
+                else:
+                    # 'map_pillar' is provided, try to use it
+                    map_ = self.opts['maps'][self.opts.get('map_pillar')]
+            else:
+                # 'map_data' is provided, try to use it
+                map_ = self.opts['map_data']
         else:
-            cached_map = self.opts['map']
-        try:
-            renderer = self.opts.get('renderer', 'yaml_jinja')
-            rend = salt.loader.render(self.opts, {})
-            blacklist = self.opts.get('renderer_blacklist')
-            whitelist = self.opts.get('renderer_whitelist')
-            map_ = compile_template(
-                cached_map, rend, renderer, blacklist, whitelist
-            )
-        except Exception as exc:
-            log.error(
-                'Rendering map {0} failed, render error:\n{1}'.format(
-                    self.opts['map'], exc
-                ),
-                exc_info_on_loglevel=logging.DEBUG
-            )
-            return {}
+            # 'map' is provided, try to use it
+            local_minion_opts = copy.deepcopy(self.opts)
+            local_minion_opts['file_client'] = 'local'
+            self.minion = salt.minion.MasterMinion(local_minion_opts)
 
-        if 'include' in map_:
-            map_ = salt.config.include_config(
-                map_, self.opts['map'], verbose=False
-            )
+            if not os.path.isfile(self.opts['map']):
+                if not (self.opts['map']).startswith('salt://'):
+                    log.error(
+                        'The specified map file does not exist: \'%s\'',
+                        self.opts['map']
+                    )
+                    raise SaltCloudNotFound()
+            if (self.opts['map']).startswith('salt://'):
+                cached_map = self.minion.functions['cp.cache_file'](self.opts['map'])
+            else:
+                cached_map = self.opts['map']
+            try:
+                renderer = self.opts.get('renderer', 'jinja|yaml')
+                rend = salt.loader.render(self.opts, {})
+                blacklist = self.opts.get('renderer_blacklist')
+                whitelist = self.opts.get('renderer_whitelist')
+                map_ = compile_template(
+                    cached_map, rend, renderer, blacklist, whitelist
+                )
+            except Exception as exc:
+                log.error(
+                    'Rendering map %s failed, render error:\n%s',
+                    self.opts['map'], exc,
+                    exc_info_on_loglevel=logging.DEBUG
+                )
+                return {}
+
+            if 'include' in map_:
+                map_ = salt.config.include_config(
+                    map_, self.opts['map'], verbose=False
+                )
+
+        if not map_:
+            return {}
 
         # Create expected data format if needed
         for profile, mapped in six.iteritems(map_.copy()):
             if isinstance(mapped, (list, tuple)):
                 entries = {}
                 for mapping in mapped:
-                    if isinstance(mapping, string_types):
+                    if isinstance(mapping, six.string_types):
                         # Foo:
                         #   - bar1
                         #   - bar2
@@ -1837,7 +1846,7 @@ class Map(Cloud):
                 map_[profile] = entries
                 continue
 
-            if isinstance(mapped, string_types):
+            if isinstance(mapped, six.string_types):
                 # If it's a single string entry, let's make iterable because of
                 # the next step
                 mapped = [mapped]
@@ -1901,7 +1910,8 @@ class Map(Cloud):
         pmap = self.map_providers_parallel(cached=cached)
         exist = set()
         defined = set()
-        for profile_name, nodes in six.iteritems(self.rendered_map):
+        rendered_map = copy.deepcopy(self.rendered_map)
+        for profile_name, nodes in six.iteritems(rendered_map):
             if profile_name not in self.opts['profiles']:
                 msg = (
                     'The required profile, \'{0}\', defined in the map '
@@ -1919,34 +1929,35 @@ class Map(Cloud):
 
             profile_data = self.opts['profiles'].get(profile_name)
 
-            # Get associated provider data, in case something like size
-            # or image is specified in the provider file. See issue #32510.
-            alias, driver = profile_data.get('provider').split(':')
-            provider_details = self.opts['providers'][alias][driver].copy()
-            del provider_details['profiles']
-
-            # Update the provider details information with profile data
-            # Profile data should override provider data, if defined.
-            # This keeps map file data definitions consistent with -p usage.
-            provider_details.update(profile_data)
-            profile_data = provider_details
-
             for nodename, overrides in six.iteritems(nodes):
-                # Get the VM name
-                nodedata = copy.deepcopy(profile_data)
+                # Get associated provider data, in case something like size
+                # or image is specified in the provider file. See issue #32510.
+                if 'provider' in overrides and overrides['provider'] != profile_data['provider']:
+                    alias, driver = overrides.get('provider').split(':')
+                else:
+                    alias, driver = profile_data.get('provider').split(':')
+
+                provider_details = copy.deepcopy(self.opts['providers'][alias][driver])
+                del provider_details['profiles']
+
+                # Update the provider details information with profile data
+                # Profile data and node overrides should override provider data, if defined.
+                # This keeps map file data definitions consistent with -p usage.
+                salt.utils.dictupdate.update(provider_details, profile_data)
+                nodedata = copy.deepcopy(provider_details)
+
                 # Update profile data with the map overrides
                 for setting in ('grains', 'master', 'minion', 'volumes',
                                 'requires'):
                     deprecated = 'map_{0}'.format(setting)
                     if deprecated in overrides:
                         log.warning(
-                            'The use of \'{0}\' on the \'{1}\' mapping has '
+                            'The use of \'%s\' on the \'%s\' mapping has '
                             'been deprecated. The preferred way now is to '
-                            'just define \'{2}\'. For now, salt-cloud will do '
+                            'just define \'%s\'. For now, salt-cloud will do '
                             'the proper thing and convert the deprecated '
-                            'mapping into the preferred one.'.format(
-                                deprecated, nodename, setting
-                            )
+                            'mapping into the preferred one.',
+                            deprecated, nodename, setting
                         )
                         overrides[setting] = overrides.pop(deprecated)
 
@@ -1960,10 +1971,10 @@ class Map(Cloud):
                     )
                     del overrides['minion']['grains']
                     # remove minion key if now is empty dict
-                    if len(overrides['minion']) == 0:
+                    if not overrides['minion']:
                         del overrides['minion']
 
-                nodedata.update(overrides)
+                nodedata = salt.utils.dictupdate.update(nodedata, overrides)
                 # Add the computed information to the return data
                 ret['create'][nodename] = nodedata
                 # Add the node name to the defined set
@@ -1997,8 +2008,8 @@ class Map(Cloud):
                             # Machine already removed
                             break
 
-                        log.warning("'{0}' already exists, removing from "
-                                 'the create map.'.format(name))
+                        log.warning("'%s' already exists, removing from "
+                                    'the create map.', name)
 
                         if 'existing' not in ret:
                             ret['existing'] = {}
@@ -2027,10 +2038,10 @@ class Map(Cloud):
             raise SaltCloudException(msg)
         # Go through the create list and calc dependencies
         for key, val in six.iteritems(dmap['create']):
-            log.info('Calculating dependencies for {0}'.format(key))
+            log.info('Calculating dependencies for %s', key)
             level = 0
             level = self._calcdep(dmap, key, val, level)
-            log.debug('Got execution order {0} for {1}'.format(level, key))
+            log.debug('Got execution order %s for %s', level, key)
             dmap['create'][key]['level'] = level
 
         try:
@@ -2039,14 +2050,18 @@ class Map(Cloud):
             existing_list = six.iteritems({})
 
         for key, val in existing_list:
-            log.info('Calculating dependencies for {0}'.format(key))
+            log.info('Calculating dependencies for %s', key)
             level = 0
             level = self._calcdep(dmap, key, val, level)
-            log.debug('Got execution order {0} for {1}'.format(level, key))
+            log.debug('Got execution order %s for %s', level, key)
             dmap['existing'][key]['level'] = level
 
         # Now sort the create list based on dependencies
         create_list = sorted(six.iteritems(dmap['create']), key=lambda x: x[1]['level'])
+        full_map = dmap['create'].copy()
+        if 'existing' in dmap:
+            full_map.update(dmap['existing'])
+        possible_master_list = sorted(six.iteritems(full_map), key=lambda x: x[1]['level'])
         output = {}
         if self.opts['parallel']:
             parallel_data = []
@@ -2054,128 +2069,134 @@ class Map(Cloud):
         master_minion_name = None
         master_host = None
         master_finger = None
-        try:
-            master_name, master_profile = next((
-                (name, profile) for name, profile in create_list
-                if profile.get('make_master', False) is True
-            ))
-            master_minion_name = master_name
-            log.debug('Creating new master \'{0}\''.format(master_name))
-            if salt.config.get_cloud_config_value(
-                'deploy',
-                master_profile,
-                self.opts
-            ) is False:
-                raise SaltCloudSystemExit(
-                    'Cannot proceed with \'make_master\' when salt deployment '
-                    'is disabled(ex: --no-deploy).'
-                )
+        for name, profile in possible_master_list:
+            if profile.get('make_master', False) is True:
+                master_name = name
+                master_profile = profile
 
-            # Generate the master keys
-            log.debug(
-                'Generating master keys for \'{0[name]}\''.format(master_profile)
-            )
-            priv, pub = salt.utils.cloud.gen_keys(
-                salt.config.get_cloud_config_value(
-                    'keysize',
+        if master_name:
+            # If the master already exists, get the host
+            if master_name not in dmap['create']:
+                master_host = self.client.query()
+                for provider_part in master_profile['provider'].split(':'):
+                    master_host = master_host[provider_part]
+                master_host = master_host[master_name][master_profile.get('ssh_interface', 'public_ips')]
+                if not master_host:
+                    raise SaltCloudSystemExit(
+                        'Could not get the hostname of master {}.'.format(master_name)
+                    )
+            # Otherwise, deploy it as a new master
+            else:
+                master_minion_name = master_name
+                log.debug('Creating new master \'%s\'', master_name)
+                if salt.config.get_cloud_config_value(
+                    'deploy',
                     master_profile,
                     self.opts
-                )
-            )
-            master_profile['master_pub'] = pub
-            master_profile['master_pem'] = priv
+                ) is False:
+                    raise SaltCloudSystemExit(
+                        'Cannot proceed with \'make_master\' when salt deployment '
+                        'is disabled(ex: --no-deploy).'
+                    )
 
-            # Generate the fingerprint of the master pubkey in order to
-            # mitigate man-in-the-middle attacks
-            master_temp_pub = salt.utils.mkstemp()
-            with salt.utils.fopen(master_temp_pub, 'w') as mtp:
-                mtp.write(pub)
-            master_finger = salt.utils.pem_finger(master_temp_pub, sum_type=self.opts['hash_type'])
-            os.unlink(master_temp_pub)
+                # Generate the master keys
+                log.debug('Generating master keys for \'%s\'', master_profile['name'])
 
-            if master_profile.get('make_minion', True) is True:
-                master_profile.setdefault('minion', {})
-                if 'id' in master_profile['minion']:
-                    master_minion_name = master_profile['minion']['id']
-                # Set this minion's master as local if the user has not set it
-                if 'master' not in master_profile['minion']:
-                    master_profile['minion']['master'] = '127.0.0.1'
-                    if master_finger is not None:
-                        master_profile['master_finger'] = master_finger
-
-            # Generate the minion keys to pre-seed the master:
-            for name, profile in create_list:
-                make_minion = salt.config.get_cloud_config_value(
-                    'make_minion', profile, self.opts, default=True
-                )
-                if make_minion is False:
-                    continue
-
-                log.debug(
-                    'Generating minion keys for \'{0[name]}\''.format(profile)
-                )
                 priv, pub = salt.utils.cloud.gen_keys(
                     salt.config.get_cloud_config_value(
                         'keysize',
-                        profile,
+                        master_profile,
                         self.opts
                     )
                 )
-                profile['pub_key'] = pub
-                profile['priv_key'] = priv
-                # Store the minion's public key in order to be pre-seeded in
-                # the master
-                master_profile.setdefault('preseed_minion_keys', {})
-                master_profile['preseed_minion_keys'].update({name: pub})
+                master_profile['master_pub'] = pub
+                master_profile['master_pem'] = priv
 
-            local_master = False
-            if master_profile['minion'].get('local_master', False) and \
-                    master_profile['minion'].get('master', None) is not None:
-                # The minion is explicitly defining a master and it's
-                # explicitly saying it's the local one
-                local_master = True
+                # Generate the fingerprint of the master pubkey in order to
+                # mitigate man-in-the-middle attacks
+                master_temp_pub = salt.utils.files.mkstemp()
+                with salt.utils.files.fopen(master_temp_pub, 'w') as mtp:
+                    mtp.write(pub)
+                master_finger = salt.utils.crypt.pem_finger(master_temp_pub, sum_type=self.opts['hash_type'])
+                os.unlink(master_temp_pub)
 
-            out = self.create(master_profile, local_master=local_master)
+                if master_profile.get('make_minion', True) is True:
+                    master_profile.setdefault('minion', {})
+                    if 'id' in master_profile['minion']:
+                        master_minion_name = master_profile['minion']['id']
+                    # Set this minion's master as local if the user has not set it
+                    if 'master' not in master_profile['minion']:
+                        master_profile['minion']['master'] = '127.0.0.1'
+                        if master_finger is not None:
+                            master_profile['master_finger'] = master_finger
 
-            if not isinstance(out, dict):
-                log.debug(
-                    'Master creation details is not a dictionary: {0}'.format(
-                        out
+                # Generate the minion keys to pre-seed the master:
+                for name, profile in create_list:
+                    make_minion = salt.config.get_cloud_config_value(
+                        'make_minion', profile, self.opts, default=True
                     )
-                )
+                    if make_minion is False:
+                        continue
 
-            elif 'Errors' in out:
-                raise SaltCloudSystemExit(
-                    'An error occurred while creating the master, not '
-                    'continuing: {0}'.format(out['Errors'])
-                )
-
-            deploy_kwargs = (
-                self.opts.get('show_deploy_args', False) is True and
-                # Get the needed data
-                out.get('deploy_kwargs', {}) or
-                # Strip the deploy_kwargs from the returned data since we don't
-                # want it shown in the console.
-                out.pop('deploy_kwargs', {})
-            )
-
-            master_host = deploy_kwargs.get('salt_host', deploy_kwargs.get('host', None))
-            if master_host is None:
-                raise SaltCloudSystemExit(
-                    'Host for new master {0} was not found, '
-                    'aborting map'.format(
-                        master_name
+                    log.debug('Generating minion keys for \'%s\'', profile['name'])
+                    priv, pub = salt.utils.cloud.gen_keys(
+                        salt.config.get_cloud_config_value(
+                            'keysize',
+                            profile,
+                            self.opts
+                        )
                     )
+                    profile['pub_key'] = pub
+                    profile['priv_key'] = priv
+                    # Store the minion's public key in order to be pre-seeded in
+                    # the master
+                    master_profile.setdefault('preseed_minion_keys', {})
+                    master_profile['preseed_minion_keys'].update({name: pub})
+
+                local_master = False
+                if master_profile['minion'].get('local_master', False) and \
+                        master_profile['minion'].get('master', None) is not None:
+                    # The minion is explicitly defining a master and it's
+                    # explicitly saying it's the local one
+                    local_master = True
+
+                out = self.create(master_profile, local_master=local_master)
+
+                if not isinstance(out, dict):
+                    log.debug('Master creation details is not a dictionary: %s', out)
+
+                elif 'Errors' in out:
+                    raise SaltCloudSystemExit(
+                        'An error occurred while creating the master, not '
+                        'continuing: {0}'.format(out['Errors'])
+                    )
+
+                deploy_kwargs = (
+                    self.opts.get('show_deploy_args', False) is True and
+                    # Get the needed data
+                    out.get('deploy_kwargs', {}) or
+                    # Strip the deploy_kwargs from the returned data since we don't
+                    # want it shown in the console.
+                    out.pop('deploy_kwargs', {})
                 )
-            output[master_name] = out
-        except StopIteration:
+
+                master_host = deploy_kwargs.get('salt_host', deploy_kwargs.get('host', None))
+                if master_host is None:
+                    raise SaltCloudSystemExit(
+                        'Host for new master {0} was not found, '
+                        'aborting map'.format(
+                            master_name
+                        )
+                    )
+                output[master_name] = out
+        else:
             log.debug('No make_master found in map')
             # Local master?
             # Generate the fingerprint of the master pubkey in order to
             # mitigate man-in-the-middle attacks
             master_pub = os.path.join(self.opts['pki_dir'], 'master.pub')
             if os.path.isfile(master_pub):
-                master_finger = salt.utils.pem_finger(master_pub, sum_type=self.opts['hash_type'])
+                master_finger = salt.utils.crypt.pem_finger(master_pub, sum_type=self.opts['hash_type'])
 
         opts = self.opts.copy()
         if self.opts['parallel']:
@@ -2227,23 +2248,20 @@ class Map(Cloud):
                     output[name].pop('deploy_kwargs', None)
             except SaltCloudException as exc:
                 log.error(
-                    'Failed to deploy \'{0}\'. Error: {1}'.format(
-                        name, exc
-                    ),
-                    # Show the traceback if the debug logging level is enabled
-                    exc_info_on_loglevel=logging.DEBUG
+                    'Failed to deploy \'%s\'. Error: %s',
+                    name, exc, exc_info_on_loglevel=logging.DEBUG
                 )
                 output[name] = {'Error': str(exc)}
 
         for name in dmap.get('destroy', ()):
             output[name] = self.destroy(name)
 
-        if self.opts['parallel'] and len(parallel_data) > 0:
+        if self.opts['parallel'] and parallel_data:
             if 'pool_size' in self.opts:
                 pool_size = self.opts['pool_size']
             else:
                 pool_size = len(parallel_data)
-            log.info('Cloud pool size: {0}'.format(pool_size))
+            log.info('Cloud pool size: %s', pool_size)
             output_multip = enter_mainloop(
                 _create_multiprocessing, parallel_data, pool_size=pool_size)
             # We have deployed in parallel, now do start action in
@@ -2259,15 +2277,11 @@ class Map(Cloud):
 
                 out = {}
                 for group in actionlist:
-                    log.info(
-                        'Running {0} on {1}'.format(
-                            self.opts['start_action'], ', '.join(group)
-                        )
-                    )
+                    log.info('Running %s on %s', self.opts['start_action'], ', '.join(group))
                     client = salt.client.get_local_client()
                     out.update(client.cmd(
                         ','.join(group), self.opts['start_action'],
-                        timeout=self.opts['timeout'] * 60, expr_form='list'
+                        timeout=self.opts['timeout'] * 60, tgt_type='list'
                     ))
                 for obj in output_multip:
                     next(six.itervalues(obj))['ret'] = out[next(six.iterkeys(obj))]
@@ -2292,7 +2306,7 @@ def create_multiprocessing(parallel_data, queue=None):
     This function will be called from another process when running a map in
     parallel mode. The result from the create is always a json object.
     '''
-    reinit_crypto()
+    salt.utils.crypt.reinit_crypto()
 
     parallel_data['opts']['output'] = 'json'
     cloud = Cloud(parallel_data['opts'])
@@ -2303,11 +2317,8 @@ def create_multiprocessing(parallel_data, queue=None):
         )
     except SaltCloudException as exc:
         log.error(
-            'Failed to deploy \'{0[name]}\'. Error: {1}'.format(
-                parallel_data, exc
-            ),
-            # Show the traceback if the debug logging level is enabled
-            exc_info_on_loglevel=logging.DEBUG
+            'Failed to deploy \'%s\'. Error: %s',
+            parallel_data['name'], exc, exc_info_on_loglevel=logging.DEBUG
         )
         return {parallel_data['name']: {'Error': str(exc)}}
 
@@ -2315,7 +2326,7 @@ def create_multiprocessing(parallel_data, queue=None):
         output.pop('deploy_kwargs', None)
 
     return {
-        parallel_data['name']: salt.utils.cloud.simple_types_filter(output)
+        parallel_data['name']: salt.utils.data.simple_types_filter(output)
     }
 
 
@@ -2324,14 +2335,14 @@ def destroy_multiprocessing(parallel_data, queue=None):
     This function will be called from another process when running a map in
     parallel mode. The result from the destroy is always a json object.
     '''
-    reinit_crypto()
+    salt.utils.crypt.reinit_crypto()
 
     parallel_data['opts']['output'] = 'json'
     clouds = salt.loader.clouds(parallel_data['opts'])
 
     try:
         fun = clouds['{0}.destroy'.format(parallel_data['driver'])]
-        with context.func_globals_inject(
+        with salt.utils.context.func_globals_inject(
             fun,
             __active_provider_name__=':'.join([
                 parallel_data['alias'],
@@ -2342,16 +2353,13 @@ def destroy_multiprocessing(parallel_data, queue=None):
 
     except SaltCloudException as exc:
         log.error(
-            'Failed to destroy {0}. Error: {1}'.format(
-                parallel_data['name'], exc
-            ),
-            # Show the traceback if the debug logging level is enabled
-            exc_info_on_loglevel=logging.DEBUG
+            'Failed to destroy %s. Error: %s',
+            parallel_data['name'], exc, exc_info_on_loglevel=logging.DEBUG
         )
         return {parallel_data['name']: {'Error': str(exc)}}
 
     return {
-        parallel_data['name']: salt.utils.cloud.simple_types_filter(output)
+        parallel_data['name']: salt.utils.data.simple_types_filter(output)
     }
 
 
@@ -2360,11 +2368,11 @@ def run_parallel_map_providers_query(data, queue=None):
     This function will be called from another process when building the
     providers map.
     '''
-    reinit_crypto()
+    salt.utils.crypt.reinit_crypto()
 
     cloud = Cloud(data['opts'])
     try:
-        with context.func_globals_inject(
+        with salt.utils.context.func_globals_inject(
             cloud.clouds[data['fun']],
             __active_provider_name__=':'.join([
                 data['alias'],
@@ -2374,17 +2382,14 @@ def run_parallel_map_providers_query(data, queue=None):
             return (
                 data['alias'],
                 data['driver'],
-                salt.utils.cloud.simple_types_filter(
+                salt.utils.data.simple_types_filter(
                     cloud.clouds[data['fun']]()
                 )
             )
     except Exception as err:
         log.debug(
-            'Failed to execute \'{0}()\' while querying for running '
-            'nodes: {1}'.format(data['fun'], err),
-            # Show the traceback if the debug logging level is
-            # enabled
-            exc_info_on_loglevel=logging.DEBUG
+            'Failed to execute \'%s()\' while querying for running nodes: %s',
+            data['fun'], err, exc_info_on_loglevel=logging.DEBUG
         )
         # Failed to communicate with the provider, don't list any nodes
         return data['alias'], data['driver'], ()

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 '''
 Allows you to manage proxy settings on minions
-=======================
+==============================================
 
 Setup proxy settings on minions
 
@@ -14,13 +14,15 @@ Setup proxy settings on minions
             - localhost
             - 127.0.0.1
 '''
-
-# Import python libs
-from __future__ import absolute_import
+# Import Python libs
+from __future__ import absolute_import, unicode_literals, print_function
 import logging
 
-# Import salt libs
-import salt.utils
+# Import Salt libs
+import salt.utils.platform
+
+# Import 3rd part libs
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 __virtualname__ = 'proxy'
@@ -30,7 +32,7 @@ def __virtual__():
     '''
     Only work on Mac OS and Windows
     '''
-    if salt.utils.is_darwin() or salt.utils.is_windows():
+    if salt.utils.platform.is_darwin() or salt.utils.platform.is_windows():
         return True
     return False
 
@@ -53,13 +55,14 @@ def managed(name, port, services=None, user=None, password=None, bypass_domains=
         The username to use for the proxy server if required
 
     password
-        The password to use if required by the server
+        The password to use for the proxy server if required
 
     bypass_domains
         An array of the domains that should bypass the proxy
 
     network_service
-        The network service to apply the changes to, this only necessary on OSX
+        The network service to apply the changes to, this only necessary on
+        macOS
     '''
     ret = {'name': name,
            'result': True,
@@ -78,7 +81,7 @@ def managed(name, port, services=None, user=None, password=None, bypass_domains=
         for service in services:
             current_settings = __salt__['proxy.get_{0}_proxy'.format(service)]()
 
-            if current_settings.get('server') == name and current_settings.get('port') == str(port):
+            if current_settings.get('server') == name and current_settings.get('port') == six.text_type(port):
                 ret['comment'] += '{0} proxy settings already set.\n'.format(service)
             elif __salt__['proxy.set_{0}_proxy'.format(service)](name, port, user, password, network_service):
                 ret['comment'] += '{0} proxy settings updated correctly\n'.format(service)
@@ -100,7 +103,7 @@ def managed(name, port, services=None, user=None, password=None, bypass_domains=
                 ret['result'] = False
                 ret['comment'] += 'Failed to set bypass proxy domains.\n'
 
-        if len(ret['changes']['new']) == 0:
+        if not ret['changes']['new']:
             del ret['changes']['new']
 
         return ret
@@ -118,7 +121,7 @@ def managed(name, port, services=None, user=None, password=None, bypass_domains=
                     changes_needed = True
                     break
 
-                if current_settings[service]['server'] != name or current_settings[service]['port'] != str(port):
+                if current_settings[service]['server'] != name or current_settings[service]['port'] != six.text_type(port):
                     changes_needed = True
                     break
         else:

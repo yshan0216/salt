@@ -7,14 +7,15 @@ Apache Traffic Server execution module.
 ``traffic_ctl`` is used to execute individual Traffic Server commands and to
 script multiple commands in a shell.
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals, print_function
 
 # Import python libs
 import logging
 import subprocess
 
 # Import salt libs
-from salt import utils
+import salt.utils.path
+import salt.utils.stringutils
 
 __virtualname__ = 'trafficserver'
 
@@ -22,22 +23,22 @@ log = logging.getLogger(__name__)
 
 
 def __virtual__():
-    if utils.which('traffic_ctl') or utils.which('traffic_line'):
+    if salt.utils.path.which('traffic_ctl') or salt.utils.path.which('traffic_line'):
         return __virtualname__
     return (False, 'trafficserver execution module not loaded: '
             'neither traffic_ctl nor traffic_line was found.')
 
 
-_TRAFFICLINE = utils.which('traffic_line')
-_TRAFFICCTL = utils.which('traffic_ctl')
+_TRAFFICLINE = salt.utils.path.which('traffic_line')
+_TRAFFICCTL = salt.utils.path.which('traffic_ctl')
 
 
 def _traffic_ctl(*args):
-    return ' '.join([_TRAFFICCTL] + args)
+    return [_TRAFFICCTL] + list(args)
 
 
 def _traffic_line(*args):
-    return ' '.join([_TRAFFICLINE] + args)
+    return [_TRAFFICLINE] + list(args)
 
 
 def _statuscmd():
@@ -46,7 +47,6 @@ def _statuscmd():
     else:
         cmd = _traffic_line('--status')
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -55,9 +55,10 @@ def _subprocess(cmd):
     Function to standardize the subprocess call
     '''
 
+    log.debug('Running: "%s"', ' '.join(cmd))
     try:
-        proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-        ret = utils.to_str(proc.communicate()[0]).strip()
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        ret = salt.utils.stringutils.to_unicode(proc.communicate()[0]).strip()
         retcode = proc.wait()
 
         if ret:
@@ -85,7 +86,7 @@ def bounce_cluster():
         cmd = _traffic_ctl('cluster', 'restart')
     else:
         cmd = _traffic_line('-B')
-    log.debug('Running: %s', cmd)
+
     return _subprocess(cmd)
 
 
@@ -112,9 +113,8 @@ def bounce_local(drain=False):
         cmd = _traffic_line('-b')
 
     if drain:
-        cmd = '{0} {1}'.format(cmd, '--drain')
+        cmd = cmd + ['--drain']
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -132,7 +132,6 @@ def clear_cluster():
     else:
         cmd = _traffic_line('-C')
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -150,7 +149,6 @@ def clear_node():
     else:
         cmd = _traffic_line('-c')
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -169,7 +167,6 @@ def restart_cluster():
     else:
         cmd = _traffic_line('-M')
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -195,26 +192,8 @@ def restart_local(drain=False):
         cmd = _traffic_line('-L')
 
     if drain:
-        cmd = '{0} {1}'.format(cmd, '--drain')
+        cmd = cmd + ['--drain']
 
-    log.debug('Running: %s', cmd)
-    return _subprocess(cmd)
-
-
-def match_var(regex):
-    '''
-    Display the current values of all performance statistics or configuration
-    variables whose names match the given regular expression.
-
-    .. deprecated:: Oxygen
-        Use ``match_metric`` or ``match_config`` instead.
-
-    .. code-block:: bash
-
-        salt '*' trafficserver.match_var regex
-    '''
-    cmd = _traffic_line('-m', regex)
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -223,7 +202,7 @@ def match_metric(regex):
     Display the current values of all metrics whose names match the
     given regular expression.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     .. code-block:: bash
 
@@ -234,7 +213,6 @@ def match_metric(regex):
     else:
         cmd = _traffic_ctl('-m', regex)
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -243,7 +221,7 @@ def match_config(regex):
     Display the current values of all configuration variables whose
     names match the given regular expression.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     .. code-block:: bash
 
@@ -254,7 +232,6 @@ def match_config(regex):
     else:
         cmd = _traffic_line('-m', regex)
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -262,7 +239,7 @@ def read_config(*args):
     '''
     Read Traffic Server configuration variable definitions.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     .. code-block:: bash
 
@@ -278,7 +255,7 @@ def read_config(*args):
     try:
         for arg in args:
             log.debug('Querying: %s', arg)
-            ret[arg] = _subprocess('{0} {1}'.format(cmd, arg))
+            ret[arg] = _subprocess(cmd + [arg])
     except KeyError:
         pass
 
@@ -289,7 +266,7 @@ def read_metric(*args):
     '''
     Read Traffic Server one or more metrics.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     .. code-block:: bash
 
@@ -305,7 +282,7 @@ def read_metric(*args):
     try:
         for arg in args:
             log.debug('Querying: %s', arg)
-            ret[arg] = _subprocess('{0} {1}'.format(cmd, arg))
+            ret[arg] = _subprocess(cmd + [arg])
     except KeyError:
         pass
 
@@ -322,7 +299,7 @@ def set_config(variable, value):
     value
         The new value to set.
 
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     .. code-block:: bash
 
@@ -334,48 +311,6 @@ def set_config(variable, value):
     else:
         cmd = _traffic_line('-s', variable, '-v', value)
 
-    log.debug('Setting %s to %s', variable, value)
-    return _subprocess(cmd)
-
-
-def read_var(*args):
-    '''
-    Read variable definitions from the traffic_line command.
-
-    .. deprecated:: Oxygen
-        Use ``read_metric`` or ``read_config`` instead. Note that this
-        function does not work for Traffic Server versions >= 7.0.
-
-    .. code-block:: bash
-
-        salt '*' trafficserver.read_var proxy.process.http.tcp_hit_count_stat
-    '''
-
-    ret = {}
-
-    try:
-        for arg in args:
-            log.debug('Querying: %s', arg)
-            cmd = '{0} {1} {2}'.format(_TRAFFICLINE, '-r', arg)
-            ret[arg] = _subprocess(cmd)
-    except KeyError:
-        pass
-
-    return ret
-
-
-def set_var(variable, value):
-    '''
-    .. code-block:: bash
-
-    .. deprecated:: Oxygen
-        Use ``set_config`` instead. Note that this function does
-        not work for Traffic Server versions >= 7.0.
-
-        salt '*' trafficserver.set_var proxy.config.http.server_ports
-    '''
-
-    cmd = _traffic_line('-s', variable, '-v', value)
     log.debug('Setting %s to %s', variable, value)
     return _subprocess(cmd)
 
@@ -396,7 +331,6 @@ def shutdown():
     else:
         cmd = _traffic_ctl('server', 'stop')
 
-    log.debug('Running: %s', cmd)
     _subprocess(cmd)
     return _statuscmd()
 
@@ -417,7 +351,6 @@ def startup():
     else:
         cmd = _traffic_ctl('server', 'start')
 
-    log.debug('Running: %s', cmd)
     _subprocess(cmd)
     return _statuscmd()
 
@@ -440,7 +373,6 @@ def refresh():
     else:
         cmd = _traffic_line('-x')
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -457,7 +389,6 @@ def zero_cluster():
     else:
         cmd = _traffic_line('-Z')
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -474,7 +405,6 @@ def zero_node():
     else:
         cmd = _traffic_line('-z')
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -497,7 +427,6 @@ def offline(path):
     else:
         cmd = _traffic_line('--offline', path)
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -515,7 +444,6 @@ def alarms():
     else:
         cmd = _traffic_line('--alarms')
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 
@@ -535,7 +463,6 @@ def clear_alarms(alarm):
     else:
         cmd = _traffic_line('--clear_alarms', alarm)
 
-    log.debug('Running: %s', cmd)
     return _subprocess(cmd)
 
 

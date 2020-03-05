@@ -1,3 +1,5 @@
+.. _runners:
+
 =======
 Runners
 =======
@@ -82,15 +84,15 @@ and will only be fired onto the event bus.
 Synchronous vs. Asynchronous
 ----------------------------
 
-A runner may be fired asychronously which will immediately return control. In
+A runner may be fired asynchronously which will immediately return control. In
 this case, no output will be display to the user if ``salt-run`` is being used
-from the command-line. If used programatically, no results will be returned.
+from the command-line. If used programmatically, no results will be returned.
 If results are desired, they must be gathered either by firing events on the
 bus from the runner and then watching for them or by some other means.
 
 .. note::
 
-    When running a runner in asyncronous mode, the ``--progress`` flag will
+    When running a runner in asynchronous mode, the ``--progress`` flag will
     not deliver output to the salt-run CLI. However, progress events will
     still be fired on the bus.
 
@@ -120,6 +122,6 @@ responding to Salt calls could look like this:
         Print a list of all of the minions that are up
         '''
         client = salt.client.LocalClient(__opts__['conf_file'])
-        minions = client.cmd('*', 'test.ping', timeout=1)
+        minions = client.cmd('*', 'test.version', timeout=1)
         for minion in sorted(minions):
             print minion
